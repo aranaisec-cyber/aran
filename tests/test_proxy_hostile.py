@@ -8,6 +8,7 @@ import io
 import json
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,6 +19,7 @@ from mcp_shield.proxy import (
     REDACTION_NOTICE,
     _gate_inbound_message,
     _gate_outbound_message,
+    _safe_peek_id,
     run_proxy,
 )
 
@@ -852,17 +854,26 @@ def test_other_agent_visible_content_shapes_are_also_rewritten(
     assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
 
 
-def test_error_message_is_rewritten_but_other_error_members_are_not(tmp_path: Path):
+def test_error_message_and_data_are_rewritten_but_the_code_is_not(tmp_path: Path):
+    """Round 4 (C-A/C-B) changed this one: under the old allowlist only
+    `error.message` was rewritten and `error.data` was relayed verbatim, which
+    made `data` a free injection channel - a client surfaces it to the agent
+    alongside the message. Under the denylist, everything in an error is content
+    except `error.code`, which a client switches on."""
     audit_path = tmp_path / "audit.jsonl"
     gated = _gate(
         {"jsonrpc": "2.0", "id": 1, "error": {
-            "code": -32000, "message": INJECTION_TEXT,
+            # a string code is non-conformant, but it is the only way to prove
+            # the exemption fires rather than "an int never matches a signature"
+            "code": INJECTION_TEXT,
+            "message": INJECTION_TEXT,
             "data": {"detail": INJECTION_TEXT},
         }},
         audit_path,
     )
     assert gated["error"]["message"] == REDACTION_NOTICE
-    assert gated["error"]["data"]["detail"] == INJECTION_TEXT
+    assert gated["error"]["data"]["detail"] == REDACTION_NOTICE
+    assert gated["error"]["code"] == INJECTION_TEXT
 
 
 @pytest.mark.parametrize("result", [
@@ -874,12 +885,27 @@ def test_error_message_is_rewritten_but_other_error_members_are_not(tmp_path: Pa
     {"serverInfo": {"name": INJECTION_TEXT}},
     {"nextCursor": INJECTION_TEXT},
     {"_meta": {"note": INJECTION_TEXT}},
+    # round 4: the rest of the machinery denylist, each with an artificial
+    # signature match in the exempt position.
+    {"capabilities": {"tools": {"listChanged": INJECTION_TEXT}}},
+    {"serverInfo": {"name": "demo", "version": INJECTION_TEXT}},
+    {"cursor": INJECTION_TEXT},
+    {"content": [{"type": INJECTION_TEXT, "text": "ok"}]},
+    {"content": [{"type": "image", "mimeType": "image/png", "blob": INJECTION_TEXT}]},
+    {"messages": [{"role": INJECTION_TEXT,
+                   "content": {"type": "text", "text": "ok"}}]},
+    {"resourceTemplates": [{"name": "t", "uriTemplate": INJECTION_TEXT}]},
+    {"_meta": {"deeply": {"nested": INJECTION_TEXT}}},
 ])
 def test_non_content_fields_are_scanned_but_relayed_verbatim(tmp_path: Path, result: dict):
-    """A match outside the rewrite allowlist is recorded for tuning but the
-    field itself is relayed untouched - rewriting it broke negotiation (and
+    """A match in a field on the machinery denylist is recorded for tuning but
+    the field itself is relayed untouched - rewriting it broke negotiation (and
     destroyed unrelated tools' metadata) without protecting the agent, since
-    these fields are not content the agent reads as tool output."""
+    none of these is prose the agent reads as server output.
+
+    Every case here puts the injection *in the exempt field itself*, so a pass
+    proves the exemption fires rather than the value merely happening not to
+    match."""
     audit_path = tmp_path / "audit.jsonl"
     gated = _gate({"jsonrpc": "2.0", "id": 1, "result": result}, audit_path)
 
@@ -940,3 +966,435 @@ def test_inbound_audit_matched_signature_is_none_when_nothing_matched(
     inbound = [e for e in _audit(audit_path) if e["direction"] == "inbound"]
     assert [e["outcome"] for e in inbound] == ["allowed"]
     assert inbound[0]["matched_signature"] is None
+
+
+# --- C-A: channels the rewrite allowlist never named -------------------------
+
+def test_initialize_instructions_are_redacted(tmp_path: Path, hostile_server_command):
+    """C-A: InitializeResult.instructions is defined by MCP as text the client
+    feeds to the model. The allowlist never named it, so it was relayed
+    byte-for-byte with `matched_signature` set and `outcome: allowed`."""
+    audit_path = tmp_path / "audit.jsonl"
+    client_out = io.BytesIO()
+
+    code = _run(
+        hostile_server_command("poisoned_instructions"),
+        audit_log_path=audit_path,
+        client_in=_client_in([_tool_call(request_id=1)]),
+        client_out=client_out,
+    )
+
+    assert code == 0
+    result = _responses(client_out)[0]["result"]
+    assert result["instructions"] == REDACTION_NOTICE
+    # the negotiation machinery around it still arrives intact
+    assert result["protocolVersion"] == "2025-03-26"
+    assert result["capabilities"] == {"tools": {"listChanged": False}}
+    assert result["serverInfo"] == {"name": "demo", "version": "1.0.0"}
+    inbound = [e for e in _audit(audit_path) if e["direction"] == "inbound"]
+    assert [e["outcome"] for e in inbound] == ["blocked"]
+
+
+def test_input_schema_parameter_description_is_redacted(
+    tmp_path: Path, hostile_server_command
+):
+    """C-A: hiding instructions in a tool parameter's description is a published
+    MCP tool-poisoning technique, and the schema is delivered to the model with
+    the tool definition. Only `tools[*].description` was on the allowlist."""
+    audit_path = tmp_path / "audit.jsonl"
+    client_out = io.BytesIO()
+
+    code = _run(
+        hostile_server_command("poisoned_input_schema"),
+        audit_log_path=audit_path,
+        client_in=_client_in([_tool_call(request_id=1)]),
+        client_out=client_out,
+    )
+
+    assert code == 0
+    tool = _responses(client_out)[0]["result"]["tools"][0]
+    assert tool["inputSchema"]["properties"]["url"]["description"] == REDACTION_NOTICE
+    # the schema still validates: name, types and `required` are untouched
+    assert tool["name"] == "fetch_page"
+    assert tool["inputSchema"]["type"] == "object"
+    assert tool["inputSchema"]["properties"]["url"]["type"] == "string"
+    assert tool["inputSchema"]["required"] == ["url"]
+    inbound = [e for e in _audit(audit_path) if e["direction"] == "inbound"]
+    assert [e["outcome"] for e in inbound] == ["blocked"]
+
+
+# --- C-B: the shape of the content must not decide whether it is redacted -----
+
+@pytest.mark.parametrize("result,probe", [
+    # `content` as a string instead of a list
+    ({"content": INJECTION_TEXT}, lambda r: r["content"]),
+    # `content` as a single dict instead of a list of dicts
+    ({"content": {"type": "text", "text": INJECTION_TEXT}}, lambda r: r["content"]["text"]),
+    # `contents` as a string
+    ({"contents": INJECTION_TEXT}, lambda r: r["contents"]),
+    # `contents` as a list of bare strings instead of objects with a .text
+    ({"contents": [INJECTION_TEXT]}, lambda r: r["contents"][0]),
+    # `content[*].text` as a list instead of a string
+    ({"content": [{"type": "text", "text": [INJECTION_TEXT]}]},
+     lambda r: r["content"][0]["text"][0]),
+    # `messages[*].content` as a string
+    ({"messages": [{"role": "user", "content": INJECTION_TEXT}]},
+     lambda r: r["messages"][0]["content"]),
+    # `messages[*].content` as a list (the sampling-message shape)
+    ({"messages": [{"role": "user",
+                    "content": [{"type": "text", "text": INJECTION_TEXT}]}]},
+     lambda r: r["messages"][0]["content"][0]["text"]),
+    # `tools` as an object instead of an array
+    ({"tools": {"fetch_page": {"name": "fetch_page", "description": INJECTION_TEXT}}},
+     lambda r: r["tools"]["fetch_page"]["description"]),
+    # a legacy/alternate result shape
+    ({"toolResult": {"text": INJECTION_TEXT}}, lambda r: r["toolResult"]["text"]),
+])
+def test_malformed_content_shapes_are_still_redacted(tmp_path: Path, result: dict, probe):
+    """C-B: all nine shapes the reviewer got past the exact-path allowlist. The
+    denylist decides on the leaf's field NAME, so `content` sent as a string, a
+    dict or a list of strings reaches the same decision, and a field misnested
+    under an unexpected parent (`tools` as an object, `toolResult`) still has its
+    own name checked."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate({"jsonrpc": "2.0", "id": 1, "result": result}, audit_path)
+
+    assert probe(gated["result"]) == REDACTION_NOTICE
+    assert INJECTION_SIGNATURE not in json.dumps(gated).lower()
+    assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
+
+
+def test_an_unenumerated_field_at_an_unexpected_depth_is_redacted(tmp_path: Path):
+    """The point of the inversion: the check is by field name at any depth, not
+    by path. A field nobody enumerated, under parents nobody enumerated, is
+    protected by default."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate(
+        {"jsonrpc": "2.0", "id": 1, "result": {
+            "somethingNew": {"wrapper": [{"description": INJECTION_TEXT,
+                                          "title": INJECTION_TEXT,
+                                          "summary": INJECTION_TEXT}]},
+        }},
+        audit_path,
+    )
+    leaf = gated["result"]["somethingNew"]["wrapper"][0]
+    assert leaf == {"description": REDACTION_NOTICE, "title": REDACTION_NOTICE,
+                    "summary": REDACTION_NOTICE}
+    assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
+
+
+def test_machinery_key_names_inside_structured_content_are_still_redacted(
+    tmp_path: Path,
+):
+    """A judgment call on the denylist: `name` earns its exemption as an
+    identifier the client resolves (a tool to call, a resource to fetch), but
+    inside `structuredContent` - free-form tool output, where no protocol
+    machinery lives - a `name` is just a value the agent reads. The exemptions
+    are voided in that subtree so it cannot be used as a redaction-free channel."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate(
+        {"jsonrpc": "2.0", "id": 1, "result": {
+            "structuredContent": {"hits": [{"name": INJECTION_TEXT,
+                                            "uri": INJECTION_TEXT,
+                                            "type": INJECTION_TEXT}]},
+        }},
+        audit_path,
+    )
+    hit = gated["result"]["structuredContent"]["hits"][0]
+    assert hit == {"name": REDACTION_NOTICE, "uri": REDACTION_NOTICE,
+                   "type": REDACTION_NOTICE}
+
+
+@pytest.mark.parametrize("result,probe", [
+    # a resource_link content block: its `name` is display text the agent reads
+    ({"content": [{"type": "resource_link", "uri": "file:///x",
+                   "name": INJECTION_TEXT}]},
+     lambda r: r["content"][0]["name"]),
+    ({"contents": [{"uri": "file:///x", "name": INJECTION_TEXT, "text": "ok"}]},
+     lambda r: r["contents"][0]["name"]),
+    ({"messages": [{"role": "user", "content": {"type": "resource_link",
+                                                "uri": "file:///x",
+                                                "name": INJECTION_TEXT}}]},
+     lambda r: r["messages"][0]["content"]["name"]),
+])
+def test_a_name_that_is_display_text_not_an_identifier_is_redacted(
+    tmp_path: Path, result: dict, probe
+):
+    """The one genuinely ambiguous key in the denylist. `name` is exempt where
+    the client resolves it (a tool to call, a resource to request); inside a
+    content block it is text the agent reads, so exempting it there would leave
+    an injection channel open - exactly the class this round closes."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate({"jsonrpc": "2.0", "id": 1, "result": result}, audit_path)
+
+    assert probe(gated["result"]) == REDACTION_NOTICE
+    assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
+
+
+@pytest.mark.parametrize("result,probe", [
+    ({"tools": [{"name": INJECTION_TEXT}]}, lambda r: r["tools"][0]["name"]),
+    ({"prompts": [{"name": INJECTION_TEXT}]}, lambda r: r["prompts"][0]["name"]),
+    ({"resources": [{"name": INJECTION_TEXT}]}, lambda r: r["resources"][0]["name"]),
+    ({"resourceTemplates": [{"name": INJECTION_TEXT}]},
+     lambda r: r["resourceTemplates"][0]["name"]),
+    ({"prompts": [{"name": "p", "arguments": [{"name": INJECTION_TEXT}]}]},
+     lambda r: r["prompts"][0]["arguments"][0]["name"]),
+    ({"serverInfo": {"name": INJECTION_TEXT}}, lambda r: r["serverInfo"]["name"]),
+    # the same identifier under a reshaped parent: `tools` as an object
+    ({"tools": {"fetch": {"name": INJECTION_TEXT}}},
+     lambda r: r["tools"]["fetch"]["name"]),
+])
+def test_a_name_the_client_resolves_is_left_alone(tmp_path: Path, result: dict, probe):
+    """The other half: redacting the name of a tool the IDE is about to call by
+    that name makes the tool unusable, which is why the exemption exists."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate({"jsonrpc": "2.0", "id": 1, "result": result}, audit_path)
+
+    assert probe(gated["result"]) == INJECTION_TEXT
+    assert REDACTION_NOTICE not in json.dumps(gated)
+    assert [e["outcome"] for e in _audit(audit_path)] == ["allowed"]
+
+
+def test_a_clean_tools_list_survives_the_denylist_untouched(tmp_path: Path):
+    """The flip side: a realistic, clean tools/list result must come through
+    byte-identical - redact-by-default must not mean rewrite-by-default."""
+    audit_path = tmp_path / "audit.jsonl"
+    result = {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {"tools": {"listChanged": True}},
+        "serverInfo": {"name": "demo", "version": "1.0.0"},
+        "nextCursor": "abc123",
+        "tools": [{
+            "name": "fetch_page",
+            "title": "Fetch page",
+            "description": "Fetch a web page and return its text.",
+            "inputSchema": {"type": "object",
+                            "properties": {"url": {"type": "string",
+                                                   "description": "The URL."}},
+                            "required": ["url"]},
+            "_meta": {"category": "web"},
+        }],
+    }
+    gated = _gate({"jsonrpc": "2.0", "id": 1, "result": result}, audit_path)
+
+    assert gated["result"] == result
+    events = _audit(audit_path)
+    assert [e["outcome"] for e in events] == ["allowed"]
+    assert events[0]["matched_signature"] is None
+
+
+# --- I-A: the outbound gate must not be fooled by batch framing --------------
+
+def _gate_outbound(line_value, audit_path: Path, client_out: io.BytesIO):
+    """Runs one outbound line through the gate, returning what would be
+    forwarded to the child process (None if nothing was)."""
+    return _gate_outbound_message(
+        (json.dumps(line_value) + "\n").encode("utf-8"),
+        output_signatures=[r"rm\s+-[rfRF]+"],
+        audit_log_path=audit_path,
+        pending_tool_calls={},
+        pending_lock=threading.Lock(),
+        client_out=client_out,
+        client_out_lock=threading.Lock(),
+    )
+
+
+def test_batched_destructive_tool_call_is_blocked(tmp_path: Path):
+    """I-A: the outbound gate returned the raw line whenever the parsed
+    top-level value was not a dict, so wrapping a destructive tools/call in a
+    batch array handed it to the real server completely ungated - the same
+    shape-framing blindness N1 fixed inbound."""
+    audit_path = tmp_path / "audit.jsonl"
+    client_out = io.BytesIO()
+
+    forward = _gate_outbound(
+        [_tool_call(tool_name="run_command", arguments={"command": "rm -rf /"})],
+        audit_path,
+        client_out,
+    )
+
+    assert forward is None, "a batched destructive call was forwarded to the server"
+    # The client is answered in the framing it used: a batch of one error.
+    assert _responses(client_out) == [[{
+        "jsonrpc": "2.0", "id": 1,
+        "error": {"code": -32000,
+                  "message": "[Aran] blocked: outbound call matched signature "
+                             "'rm\\\\s+-[rfRF]+'"},
+    }]]
+    outbound = [e for e in _audit(audit_path) if e["direction"] == "outbound"]
+    assert [e["outcome"] for e in outbound] == ["blocked"]
+    assert outbound[0]["tool_name"] == "run_command"
+
+
+def test_nested_batch_destructive_tool_call_is_blocked(tmp_path: Path):
+    audit_path = tmp_path / "audit.jsonl"
+    client_out = io.BytesIO()
+
+    forward = _gate_outbound(
+        [[_tool_call(tool_name="run_command", arguments={"command": "rm -rf /"})]],
+        audit_path,
+        client_out,
+    )
+
+    assert forward is None
+    assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
+
+
+def test_outbound_batch_keeps_the_clean_calls_and_drops_the_blocked_one(
+    tmp_path: Path, fake_server_command
+):
+    """The surgical option the finding allows, and the one that matches the
+    inbound precedent: the batch framing survives, the blocked element is
+    stripped and answered with a -32000 for its own id, and the rest of the
+    batch reaches the server."""
+    audit_path = tmp_path / "audit.jsonl"
+    client_out = io.BytesIO()
+    batch = [
+        _tool_call(request_id=1, tool_name="run_command",
+                   arguments={"command": "rm -rf /"}),
+        _tool_call(request_id=2, tool_name="list_files"),
+    ]
+    client_in = io.BytesIO((json.dumps(batch) + "\n").encode("utf-8"))
+
+    code = _run(
+        fake_server_command,
+        audit_log_path=audit_path,
+        client_in=client_in,
+        client_out=client_out,
+    )
+
+    assert code == 0
+    payload = json.dumps(_responses(client_out))
+    # the fake server's marker for a forwarded call - absent for the blocked one
+    assert "ran run_command" not in payload
+    # ...and present for the clean one, which was still delivered
+    assert "ran list_files" in payload
+    blocked_replies = [
+        m for batch_or_msg in _responses(client_out)
+        for m in (batch_or_msg if isinstance(batch_or_msg, list) else [batch_or_msg])
+        if "error" in m
+    ]
+    assert len(blocked_replies) == 1
+    assert blocked_replies[0]["id"] == 1
+    assert blocked_replies[0]["error"]["code"] == -32000
+    outbound = [e for e in _audit(audit_path) if e["direction"] == "outbound"]
+    assert [e["outcome"] for e in outbound] == ["blocked", "allowed"]
+    assert [e["tool_name"] for e in outbound] == ["run_command", "list_files"]
+
+
+def test_clean_outbound_batch_is_forwarded_byte_for_byte(tmp_path: Path):
+    """Nothing blocked means nothing rewritten: the line the server receives is
+    the line the client sent."""
+    audit_path = tmp_path / "audit.jsonl"
+    line = (json.dumps([_tool_call(request_id=1, tool_name="list_files")]) + "\n").encode()
+
+    forward = _gate_outbound_message(
+        line,
+        output_signatures=[r"rm\s+-[rfRF]+"],
+        audit_log_path=audit_path,
+        pending_tool_calls={},
+        pending_lock=threading.Lock(),
+        client_out=io.BytesIO(),
+        client_out_lock=threading.Lock(),
+    )
+
+    assert forward == line
+
+
+# --- fold-in 1: nested inbound batches must not relay raw and unaudited ------
+
+def test_nested_batch_array_response_is_gated_not_relayed_raw(
+    tmp_path: Path, hostile_server_command
+):
+    """A batch inside a batch: the element is a list, not a dict, so it used to
+    be skipped rather than recursed into - relayed raw with zero audit, for the
+    same reason the single-level batch case did before N1."""
+    audit_path = tmp_path / "audit.jsonl"
+    client_out = io.BytesIO()
+
+    code = _run(
+        hostile_server_command("nested_batch_array"),
+        audit_log_path=audit_path,
+        client_in=_client_in([_tool_call(request_id=1)]),
+        client_out=client_out,
+    )
+
+    assert code == 0
+    raw = client_out.getvalue().decode("utf-8")
+    assert INJECTION_SIGNATURE not in raw.lower(), (
+        "a nested batch array relayed the injected response un-gated"
+    )
+    assert "content blocked" in raw.lower()
+    # The nesting itself survives: the client still receives [[{...}]].
+    messages = _responses(client_out)
+    assert isinstance(messages[0], list) and isinstance(messages[0][0], list)
+    assert messages[0][0][0]["id"] == 1
+    inbound = [e for e in _audit(audit_path) if e["direction"] == "inbound"]
+    assert [e["outcome"] for e in inbound] == ["blocked"]
+    assert inbound[0]["tool_name"] == "fetch_page"
+
+
+def test_absurdly_nested_batch_fails_closed(tmp_path: Path):
+    """The cap on the unwrapping: past it the line is un-inspectable, so it
+    takes the fail-closed path (the caller drops and audits it) rather than
+    being relayed or blowing the recursion limit."""
+    buried: Any = {"jsonrpc": "2.0", "id": 1,
+                   "result": {"content": [{"type": "text", "text": INJECTION_TEXT}]}}
+    for _ in range(40):
+        buried = [buried]
+
+    with pytest.raises(ValueError):
+        _gate_inbound_message(
+            (json.dumps(buried) + "\n").encode("utf-8"),
+            input_signatures=[INJECTION_SIGNATURE],
+            audit_log_path=tmp_path / "audit.jsonl",
+            pending_tool_calls={},
+            pending_lock=threading.Lock(),
+        )
+
+
+# --- fold-in 2: id recovery prefers a response-shaped element's id -----------
+
+def test_peek_id_prefers_the_response_element_over_a_server_request(tmp_path: Path):
+    """_safe_peek_id used to answer for the *first* element carrying any id. In a
+    batch that pairs a server-originated request with the response the client is
+    waiting on, that synthesizes an error for the server's own id - and the
+    client hangs on the id it actually sent."""
+    line = json.dumps([
+        {"jsonrpc": "2.0", "id": 999, "method": "ping"},
+        {"jsonrpc": "2.0", "id": 7, "result": {"content": []}},
+    ]).encode("utf-8")
+
+    assert _safe_peek_id(line) == 7
+
+
+def test_peek_id_still_answers_a_request_only_batch(tmp_path: Path):
+    """With no response-shaped element there is nothing better to answer for, so
+    the first usable id still wins - better a reply for the wrong id than a
+    client that hangs."""
+    line = json.dumps([{"jsonrpc": "2.0", "id": 4, "method": "ping"}]).encode("utf-8")
+
+    assert _safe_peek_id(line) == 4
+
+
+def test_dropped_batch_answers_the_response_elements_id(
+    tmp_path: Path, hostile_server_command
+):
+    """The same fix end to end: a dropped batch carrying a server `ping` (id 999)
+    in front of an un-inspectable response for the client's id 1 must answer
+    id 1."""
+    audit_path = tmp_path / "audit.jsonl"
+    client_out = io.BytesIO()
+
+    code = _run(
+        hostile_server_command("uninspectable_batch_with_server_request"),
+        audit_log_path=audit_path,
+        client_in=_client_in([_tool_call(request_id=1)]),
+        client_out=client_out,
+    )
+
+    assert code == EXIT_PROXY_DEGRADED
+    responses = _responses(client_out)
+    assert len(responses) == 1
+    assert responses[0]["id"] == 1, "the client was answered for the server's own id"
+    assert "could not be inspected" in responses[0]["error"]["message"]

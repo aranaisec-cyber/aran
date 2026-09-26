@@ -31,6 +31,12 @@ _MAX_WALK_DEPTH = 200
 # than this many in-flight calls costs an audit label, never a gate check.
 _MAX_PENDING_TOOL_CALLS = 4096
 
+# How many levels of JSON-RPC batch array either gate will unwrap. One level is
+# the only legal shape; a batch inside a batch is already non-conformant, so a
+# couple of levels of tolerance is generosity and anything past this cap is a
+# payload aimed at the recursion limit - it takes the fail-closed path.
+_MAX_BATCH_NESTING = 8
+
 
 def _write_line(stream: BinaryIO, lock: threading.Lock, data: bytes) -> None:
     with lock:
@@ -38,13 +44,16 @@ def _write_line(stream: BinaryIO, lock: threading.Lock, data: bytes) -> None:
         stream.flush()
 
 
-def _blocked_response(request_id: RequestId, message: str) -> bytes:
-    payload = {
+def _blocked_payload(request_id: RequestId, message: str) -> dict:
+    return {
         "jsonrpc": "2.0",
         "id": request_id,
         "error": {"code": -32000, "message": message},
     }
-    return (json.dumps(payload) + "\n").encode("utf-8")
+
+
+def _blocked_response(request_id: RequestId, message: str) -> bytes:
+    return _encode_json_line(_blocked_payload(request_id, message))
 
 
 def _warn(text: str) -> None:
@@ -117,58 +126,106 @@ class _ListIndex:
 _INDEX = _ListIndex()
 
 
-# Rewritable positions inside a `result`, as {list-bearing member: allowed tails
-# within one of its elements}. A tail of () means the element itself is a string.
-# Everything here is content or a description the agent reads as server output;
-# nothing here is protocol machinery. The two content-block shapes are MCP's
-# `content` (tools/call, prompts) and `contents` (resources/read).
-_REWRITABLE_ELEMENT_TAILS: dict[str, set[tuple[str, ...]]] = {
-    "content": {(), ("text",), ("resource", "text")},
-    "contents": {("text",)},
-    "messages": {("content", "text"), ("content", "resource", "text")},
-    "tools": {("description",)},
-    "prompts": {("description",)},
-    "resources": {("description",)},
-    "resourceTemplates": {("description",)},
-}
+# --- The rewrite rule: a fail-closed denylist of protocol machinery ----------
+#
+# Every string leaf of an inbound result/error is *scanned* unconditionally -
+# that is what closes the N1/R1 bypass class and does not change here. What
+# changed (round 4, C-A/C-B) is the *rewrite* decision. Enumerating the
+# content-bearing positions instead - an allowlist of exact field paths - was
+# fail-open by construction: anything nobody thought to list was relayed
+# verbatim, which lost `result.instructions` and tool `inputSchema` parameter
+# descriptions (both agent-visible by spec), and let a hostile server evade
+# redaction outright just by sending content in an unexpected-but-still-parsed
+# shape (`content` as a bare string, `contents` as a list of strings,
+# `messages[*].content` as a list, `tools` as an object, ...).
+#
+# The rule is now inverted: redact by default, exempt only protocol machinery,
+# and decide the exemption from the leaf's own field NAME rather than its exact
+# path. A misnested field still carries its name, so the same decision is
+# reached whatever shape it arrives in - and a field nobody enumerated defaults
+# to protected rather than exposed.
 
-# Rewritable members directly under `result`: the prompt description a
-# prompts/get returns, and structuredContent (matched recursively, below).
-_REWRITABLE_RESULT_KEYS = {"description"}
+# Machinery keys: the value under one of these names is consumed structurally by
+# the client or the protocol. Replacing it breaks the session (negotiation,
+# pagination) or the client's ability to address the thing it names (a tool to
+# call, a resource to fetch, a content block to render) - without protecting the
+# agent, because none of it is prose the model reads as server output.
+# Deliberately NOT here: `description`, `title`, `instructions`, `text`, `data`
+# and everything else - those are the injection channels redaction exists for.
+_MACHINERY_KEYS = frozenset({
+    "protocolVersion",       # initialize negotiation
+    "nextCursor", "cursor",  # pagination tokens
+    "name",                  # identifier - but see _NAMED_ENTRY_PARENTS
+    "uri", "uriTemplate",    # resource addresses
+    "mimeType",              # content-block media type
+    "blob",                  # base64 payload of a binary content block
+    "type",                  # content-block discriminator: text/image/resource
+    "role",                  # "user"/"assistant"
+})
+
+# `name` is the one denylisted key MCP genuinely uses both ways, so its
+# exemption is conditional. It is an identifier where the thing being named is
+# something the client addresses by name - a tool it calls, a prompt/resource/
+# template it requests, a prompt argument, an implementation it negotiates with
+# (`serverInfo`, covered as a subtree below) - and redacting one of those breaks
+# the client's ability to use it at all. Inside a content block it is display
+# text the agent reads (a resource_link's `name`, for instance), so the
+# exemption does not apply there and such a name is redacted like any other
+# content. This is a *narrowing* of an exemption, decided by an ancestor's field
+# name rather than an exact path, so it holds under reshaped payloads too.
+_NAMED_ENTRY_PARENTS = frozenset({
+    "tools", "prompts", "resources", "resourceTemplates", "arguments",
+})
+
+# Machinery subtrees: everything at or under one of these keys, at any depth, is
+# machinery. `capabilities` and `serverInfo` are negotiation (and carry nested
+# fields - `version`, per-capability flags - that are not worth enumerating one
+# by one), `_meta` is the protocol's reserved extension slot.
+_MACHINERY_SUBTREES = frozenset({"capabilities", "serverInfo", "_meta"})
+
+# `error.code` is machinery (clients switch on it), but `code` anywhere else is
+# just a field name a server can put prose in, so this one exemption stays
+# anchored to its exact position. Anchoring *narrows* an exemption, which is the
+# fail-closed direction; a path is never used to grant one.
+_MACHINERY_PATHS = frozenset({("error", "code")})
+
+# Subtrees that are free-form server/tool output by definition, where no
+# protocol machinery lives: inside them the exemptions above do not apply. A
+# tool that returns {"name": "..."} in its structured output is returning
+# content the agent reads, not an identifier the client resolves.
+_CONTENT_SUBTREES = frozenset({"structuredContent"})
 
 
 def _rewrite_allowed(path: tuple[Any, ...]) -> bool:
-    """Whether the string leaf reached by `path` is one of the agent-visible
-    content positions Aran rewrites (N4). `path` starts at the top-level member
-    being walked - ("result", ...) or ("error", ...) - with _INDEX standing in
-    for a list position.
+    """Whether a matched string leaf at `path` is replaced with the redaction
+    notice. `path` starts at the top-level member being walked - ("result", ...)
+    or ("error", ...) - with _INDEX standing in for a list position.
 
-    Every string leaf is *scanned* (that is what closes the bypass class behind
-    N1/R1), but rewriting the ones that are protocol machinery rather than
-    content broke session/capability negotiation whenever a signature happened
-    to match `protocolVersion`, `serverInfo.name`, `nextCursor` or a tool's
-    `name`, and destroyed unrelated tools' metadata. Those are now
-    scanned-but-relayed-verbatim. Descriptions stay rewritable on purpose: a
-    poisoned tool description is the real injection vector the wider scanning was
-    added for."""
-    root, rest = path[0], path[1:]
-    if root == "error":
-        return rest == ("message",)
-    # root == "result"
-    if not rest:
-        # `result` is itself a string: a non-conformant result (MCP requires an
-        # object) carrying content directly. Nothing to preserve for the
-        # protocol's sake, so it is treated as content. See _gate_response_object
-        # for the list/scalar case.
+    The answer is True (redact) unless the leaf is protocol machinery; see the
+    denylist above for why it is an exemption list rather than an allowlist.
+
+    The exemption is decided by field name at any depth, never by exact path. A
+    list index is not a field name, so the governing name for a leaf inside a
+    list is the member the list hangs off: `content` sent as a bare string, as a
+    single dict, or as a list of bare strings all resolve to `content` - not on
+    the denylist, therefore redacted - and `tools` sent as an object instead of
+    an array still reaches `description` for its leaf.
+
+    Two exemptions are narrowed by context (never widened): `error.code`, and
+    `name` outside a named-entry parent. See the constants above."""
+    if path in _MACHINERY_PATHS:
+        return False
+    keys = [p for p in path if isinstance(p, str)]
+    if any(key in _CONTENT_SUBTREES for key in keys):
         return True
-    head = rest[0]
-    if head == "structuredContent":
-        return True  # recursively: all of it is tool output the agent reads
-    if len(rest) == 1:
-        return head in _REWRITABLE_RESULT_KEYS
-    if len(rest) >= 2 and rest[1] is _INDEX:
-        return rest[2:] in _REWRITABLE_ELEMENT_TAILS.get(head, ())
-    return False
+    if any(key in _MACHINERY_SUBTREES for key in keys):
+        return False
+    if not keys:
+        return True
+    own_key = keys[-1]
+    if own_key == "name":
+        return not any(key in _NAMED_ENTRY_PARENTS for key in keys[:-1])
+    return own_key not in _MACHINERY_KEYS
 
 
 def _scan_and_redact(
@@ -179,20 +236,20 @@ def _scan_and_redact(
     *,
     path: tuple[Any, ...],
     depth: int = 0,
-    force_rewrite: bool = False,
 ) -> Any:
     """Walks every string leaf under `value`, checking each against the input
-    gate and replacing the ones in a rewritable position with the redaction
-    notice.
+    gate and replacing every match with the redaction notice except where
+    _rewrite_allowed exempts it as protocol machinery.
 
     Walking the whole decoded result (rather than only result.content[*].text)
     covers the channels that otherwise reach the agent unchecked: bare-string
     content blocks, result.structuredContent, embedded-resource blocks'
-    resource.text, tools/list descriptions, and error.message.
+    resource.text, result.instructions, inputSchema parameter descriptions,
+    tools/list descriptions, and error.message.
 
     `matches` collects everything that matched (for audit visibility);
     `redactions` collects only what was actually rewritten, which is what makes
-    a message "blocked". See _rewrite_allowed for the rewrite allowlist."""
+    a message "blocked". See _rewrite_allowed for the machinery denylist."""
     if depth > _MAX_WALK_DEPTH:
         raise ValueError("server result nested too deeply to inspect")
     if isinstance(value, str):
@@ -200,7 +257,7 @@ def _scan_and_redact(
         if matched is None:
             return value
         matches.append(matched)
-        if force_rewrite or _rewrite_allowed(path):
+        if _rewrite_allowed(path):
             redactions.append(matched)
             return REDACTION_NOTICE
         return value
@@ -208,7 +265,7 @@ def _scan_and_redact(
         return {
             k: _scan_and_redact(
                 v, signatures, matches, redactions,
-                path=path + (k,), depth=depth + 1, force_rewrite=force_rewrite,
+                path=path + (k,), depth=depth + 1,
             )
             for k, v in value.items()
         }
@@ -216,34 +273,40 @@ def _scan_and_redact(
         return [
             _scan_and_redact(
                 item, signatures, matches, redactions,
-                path=path + (_INDEX,), depth=depth + 1, force_rewrite=force_rewrite,
+                path=path + (_INDEX,), depth=depth + 1,
             )
             for item in value
         ]
     return value
 
 
-def _gate_outbound_message(
-    line: bytes,
+class _Dropped:
+    """Marks an outbound element the gate refuses to forward."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<dropped>"
+
+
+_DROP = _Dropped()
+
+
+def _gate_outbound_object(
+    message: dict,
     *,
     output_signatures: SignatureList,
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
-    client_out: BinaryIO,
-    client_out_lock: threading.Lock,
-) -> bytes | None:
-    """Applies the output gate to one client->server line. Returns the bytes to
-    forward to the server, or None if the call was blocked (in which case the
-    error response has already been written back to the client)."""
-    try:
-        message = _decode_json_line(line)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return line
-
-    # A valid-JSON line that isn't an object has no method/params to gate.
-    if not isinstance(message, dict) or message.get("method") != "tools/call":
-        return line
+    blocked: list[tuple[RequestId, str]],
+) -> Any:
+    """Gates one client->server JSON-RPC object. Returns the object to forward,
+    or _DROP when the call is blocked - in which case (id, message) is appended
+    to `blocked` so the caller can answer the client in the framing the client
+    used."""
+    if message.get("method") != "tools/call":
+        return message
 
     params = message.get("params")
     if not isinstance(params, dict):
@@ -263,12 +326,10 @@ def _gate_outbound_message(
             outcome="blocked",
             matched_signature=matched,
         )
-        blocked = _blocked_response(
-            request_id,
-            f"[Aran] blocked: outbound call matched signature {matched!r}",
+        blocked.append(
+            (request_id, f"[Aran] blocked: outbound call matched signature {matched!r}")
         )
-        _write_line(client_out, client_out_lock, blocked)
-        return None
+        return _DROP
 
     log_event(
         audit_log_path,
@@ -286,7 +347,87 @@ def _gate_outbound_message(
         # response is gated (R1), so eviction is decoupled from gating.
         while len(pending_tool_calls) > _MAX_PENDING_TOOL_CALLS:
             del pending_tool_calls[next(iter(pending_tool_calls))]
-    return line
+    return message
+
+
+def _gate_outbound_value(value: Any, *, depth: int = 0, **gate: Any) -> Any:
+    """Gates one outbound value, unwrapping JSON-RPC batch framing.
+
+    A `tools/call` wrapped in a batch array used to reach the real server
+    completely ungated, because the parsed top-level value was a list rather
+    than a dict - the same shape-dependent blindness N1 fixed on the inbound
+    side, still open here (I-A). Every element of an array is gated
+    individually; blocked elements are removed and the rest are forwarded with
+    the batch framing intact, mirroring how the inbound batch case gates
+    element-by-element instead of judging the batch as a whole."""
+    if isinstance(value, list):
+        if depth >= _MAX_BATCH_NESTING:
+            raise ValueError("outbound batch nested too deeply to inspect")
+        if not value:
+            return value
+        kept = [
+            gated
+            for gated in (
+                _gate_outbound_value(element, depth=depth + 1, **gate) for element in value
+            )
+            if gated is not _DROP
+        ]
+        return kept if kept else _DROP
+    if isinstance(value, dict):
+        return _gate_outbound_object(value, **gate)
+    # A valid-JSON line that is neither object nor array has no method/params
+    # to gate.
+    return value
+
+
+def _gate_outbound_message(
+    line: bytes,
+    *,
+    output_signatures: SignatureList,
+    audit_log_path: Path,
+    pending_tool_calls: dict[RequestId, str],
+    pending_lock: threading.Lock,
+    client_out: BinaryIO,
+    client_out_lock: threading.Lock,
+) -> bytes | None:
+    """Applies the output gate to one client->server line. Returns the bytes to
+    forward to the server, or None if everything in the line was blocked (in
+    which case the error response has already been written back to the client)."""
+    try:
+        message = _decode_json_line(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return line
+
+    blocked: list[tuple[RequestId, str]] = []
+    gated = _gate_outbound_value(
+        message,
+        output_signatures=output_signatures,
+        audit_log_path=audit_log_path,
+        pending_tool_calls=pending_tool_calls,
+        pending_lock=pending_lock,
+        blocked=blocked,
+    )
+
+    if blocked:
+        # Every blocked call the client can be answered for gets an error for
+        # its own id, in the framing it was sent in: one object for a plain
+        # request, an array for a batch. A blocked element with no usable id is
+        # a notification - there is nothing to answer.
+        payloads = [_blocked_payload(rid, text) for rid, text in blocked if rid is not None]
+        if payloads:
+            _write_line(
+                client_out,
+                client_out_lock,
+                _encode_json_line(payloads if isinstance(message, list) else payloads[0]),
+            )
+
+    if gated is _DROP:
+        return None
+    if gated == message:
+        # Nothing was removed: forward the original bytes, so a line the gate
+        # did not change reaches the server exactly as the client wrote it.
+        return line
+    return _encode_json_line(gated)
 
 
 def _pump_client_to_server(
@@ -354,22 +495,41 @@ def _pump_client_to_server(
             pass
 
 
+def _iter_message_objects(value: Any, depth: int = 0):
+    """Yields every JSON-RPC-object-shaped value in `value`, unwrapping batch
+    arrays (including nested ones). Best-effort: used only for id recovery, so
+    it stops at the nesting cap rather than raising."""
+    if isinstance(value, dict):
+        yield value
+    elif isinstance(value, list) and depth < _MAX_BATCH_NESTING:
+        for element in value:
+            yield from _iter_message_objects(element, depth + 1)
+
+
 def _safe_peek_id(line: bytes) -> RequestId:
+    """Best-effort recovery of the id to answer for a line that had to be
+    dropped, so a client waiting on that request gets a reply (R2) instead of
+    hanging. One synthesized error is all a single line can carry back.
+
+    A *response*-shaped element's id wins over any other element's id: in a
+    batch, a server-originated request sitting next to the response carries an
+    id from the server's own numbering, and answering that one would leave the
+    client waiting forever for the id it actually sent."""
     try:
         message = _decode_json_line(line)
     except Exception:  # noqa: BLE001 - best-effort id recovery only
         return None
-    if isinstance(message, list):
-        # A batch that had to be dropped: answer for the first id in it, so a
-        # client waiting on that request still gets a reply (R2) instead of
-        # hanging. One synthesized error is all a single line can carry back.
-        for element in message:
-            if isinstance(element, dict) and "id" in element:
-                return _usable_request_id(element.get("id"))
-        return None
-    if not isinstance(message, dict):
-        return None
-    return _usable_request_id(message.get("id"))
+    objects = list(_iter_message_objects(message))
+    for responses_only in (True, False):
+        for element in objects:
+            if responses_only and not _is_response(element):
+                continue
+            if "id" not in element:
+                continue
+            request_id = _usable_request_id(element.get("id"))
+            if request_id is not None:
+                return request_id
+    return None
 
 
 def _gate_response_object(
@@ -389,26 +549,26 @@ def _gate_response_object(
     redactions: list[str] = []
     for key in ("result", "error"):
         if key in message:
-            value = message[key]
             # A result/error that is not an object at all (a bare string, a
             # list) is non-conformant: it holds no protocol machinery to
-            # preserve, only content, so everything in it is rewritable (C2).
+            # preserve, only content. No special case is needed for it any more
+            # - the denylist keys off field names, and a value reached without
+            # passing through a machinery field name is content by default (C2).
             message[key] = _scan_and_redact(
-                value,
+                message[key],
                 input_signatures,
                 matches,
                 redactions,
                 path=(key,),
-                force_rewrite=not isinstance(value, dict),
             )
 
     log_event(
         audit_log_path,
         direction="inbound",
         tool_name=tool_name,
-        # "blocked" means content was actually rewritten. A match in a
-        # scanned-but-not-rewritten field (protocolVersion, tool name, resource
-        # uri, ... - see _rewrite_allowed) is still named in the record for
+        # "blocked" means content was actually rewritten. A match in an exempt
+        # machinery field (protocolVersion, tool name, resource uri, ... - see
+        # _rewrite_allowed) is still named in the record for
         # false-positive tuning, but the message was relayed as it arrived.
         outcome="blocked" if redactions else "allowed",
         # Only the first match is recorded: the audit field is a single string
@@ -416,6 +576,30 @@ def _gate_response_object(
         # positive. The payload itself is deliberately never logged or echoed.
         matched_signature=(redactions or matches or [None])[0],
     )
+
+
+def _gate_inbound_batch(elements: list, *, depth: int, gate: dict) -> bool:
+    """Gates every response-shaped element of a batch array in place, and
+    returns whether anything was gated (i.e. whether the line has to be
+    re-encoded).
+
+    Nested batch arrays are recursed into rather than skipped: an element that
+    is a list, not a dict, used to fall through with no gating and no audit
+    record at all - the same "not the expected shape, therefore not inspected"
+    hole N1 closed one level up. The nesting cap raises instead of recursing
+    forever, which puts an absurdly nested line on the caller's fail-closed
+    path (dropped, audited, answered) rather than relaying it."""
+    gated = False
+    for element in elements:
+        if isinstance(element, list):
+            if depth >= _MAX_BATCH_NESTING:
+                raise ValueError("inbound batch nested too deeply to inspect")
+            if _gate_inbound_batch(element, depth=depth + 1, gate=gate):
+                gated = True
+        elif isinstance(element, dict) and _is_response(element):
+            _gate_response_object(element, **gate)
+            gated = True
+    return gated
 
 
 def _gate_inbound_message(
@@ -471,12 +655,7 @@ def _gate_inbound_message(
         # JSON-RPC 2.0 batch framing (also in MCP's 2025-03-26 revision): gate
         # every response-shaped element, leave server-originated elements alone,
         # and hand the batch back with its framing intact.
-        gated = False
-        for element in message:
-            if isinstance(element, dict) and _is_response(element):
-                _gate_response_object(element, **gate)
-                gated = True
-        if not gated:
+        if not _gate_inbound_batch(message, depth=1, gate=gate):
             return line
         return _encode_json_line(message)
 

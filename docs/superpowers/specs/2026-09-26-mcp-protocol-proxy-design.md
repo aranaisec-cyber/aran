@@ -92,6 +92,10 @@ stdin/stdout) and the wrapped server (child stdin/stdout):
   synthesizes a JSON-RPC error response (reusing the original request's
   `id`) and writes it directly back to the IDE.
 - If allowed: forward unmodified to the child process.
+- Batch arrays (including nested ones) are unwrapped and each element gated on
+  its own, so batch framing cannot carry a `tools/call` past the gate; blocked
+  elements are stripped and answered individually, and the rest of the batch is
+  forwarded with its framing intact.
 
 **Server → Client (inbound):**
 - Pass through all non-tool-result messages unmodified.
@@ -114,22 +118,31 @@ collisions, a spurious early response for a pending id, `"method": null`
 alongside a real `result`, or a one-element JSON-RPC batch array. A message is
 now gated whenever it carries a `result` or an `error` member, wherever it sits;
 genuine server-originated requests and notifications carry neither and are still
-passed through unmodified. Every string leaf of a gated response is scanned, but
-only these content-bearing fields are ever **rewritten** with the redaction
-notice: `result.content[*]` (the block itself when it is a bare string, its
-`text`, and an embedded resource's `resource.text`), `result.contents[*].text`
-(`resources/read`), `result.messages[*].content.text` and its embedded
-`resource.text` (`prompts/get`), `result.structuredContent` (recursively),
-`error.message`, `result.description`, and the `description` of each entry in
-`result.tools`, `result.prompts`, `result.resources` and
-`result.resourceTemplates` - a poisoned tool description being a real injection
-vector. A `result` that is not an object at all (a bare string or array, which
-MCP does not allow) is treated as content in full. Other fields
-(`protocolVersion`, `serverInfo.*`, `nextCursor`, a tool's `name`, resource URIs
-and metadata) are scanned-but-not-rewritten: a signature match there is recorded
-in the audit log for tuning, while the value is relayed verbatim, because
-rewriting protocol machinery broke session/capability negotiation and destroyed
-unrelated tools' metadata without protecting the agent.
+passed through unmodified. Batch arrays are unwrapped (including nested ones)
+and their response-shaped elements gated individually, with the framing left
+intact.
+
+Every string leaf of a gated response is scanned, and a match is **rewritten**
+with the redaction notice **unless the field it sits in is protocol machinery**.
+Listing the content-bearing fields instead (an allowlist of exact paths) was
+fail-open by construction: fields nobody enumerated - `result.instructions`, a
+tool's `inputSchema` parameter `description`s - were relayed verbatim, and a
+hostile server could evade redaction just by sending content in an unexpected
+shape (`content` as a bare string, `contents` as a list of strings,
+`messages[*].content` as a list, `tools` as an object). The rule is therefore
+inverted: redact by default, and exempt only a short denylist of machinery
+**field names**, matched at any depth rather than by path, so the decision does
+not depend on a shape the server controls. Exempt: `protocolVersion`,
+`nextCursor`/`cursor`, `uri`/`uriTemplate`, `mimeType`, `blob`, `type`, `role`,
+everything at or under `capabilities`, `serverInfo` and `_meta`, `error.code`,
+and `name` where it identifies something the client addresses by name (a tool,
+prompt, resource, template or prompt argument). A match in an exempt field is
+recorded in the audit log for tuning while the value is relayed verbatim,
+because rewriting protocol machinery broke session/capability negotiation and
+destroyed unrelated tools' metadata without protecting the agent. Everything
+else - `description`, `title`, `instructions`, `text`, `data`, structured tool
+output, a content block's display `name`, and any field not yet invented - is
+content and is redacted on a match.
 
 ### 3.3 Config
 Rule signatures are loaded once at startup from
