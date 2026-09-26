@@ -813,6 +813,45 @@ def test_content_bearing_fields_are_rewritten(tmp_path: Path):
     assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
 
 
+@pytest.mark.parametrize("result,probe", [
+    # resources/read returns `contents`, not `content`.
+    ({"contents": [{"uri": "file:///x", "mimeType": "text/plain",
+                    "text": INJECTION_TEXT}]},
+     lambda r: r["contents"][0]["text"]),
+    # prompts/get returns messages whose content the agent reads directly.
+    ({"messages": [{"role": "user",
+                    "content": {"type": "text", "text": INJECTION_TEXT}}]},
+     lambda r: r["messages"][0]["content"]["text"]),
+    ({"messages": [{"role": "user", "content": {
+        "type": "resource",
+        "resource": {"uri": "file:///x", "text": INJECTION_TEXT}}}]},
+     lambda r: r["messages"][0]["content"]["resource"]["text"]),
+    ({"description": INJECTION_TEXT}, lambda r: r["description"]),
+    ({"prompts": [{"name": "p", "description": INJECTION_TEXT}]},
+     lambda r: r["prompts"][0]["description"]),
+    ({"resources": [{"uri": "file:///x", "description": INJECTION_TEXT}]},
+     lambda r: r["resources"][0]["description"]),
+    ({"resourceTemplates": [{"uriTemplate": "file:///{p}",
+                             "description": INJECTION_TEXT}]},
+     lambda r: r["resourceTemplates"][0]["description"]),
+])
+def test_other_agent_visible_content_shapes_are_also_rewritten(
+    tmp_path: Path, result: dict, probe
+):
+    """The allowlist in the N4 finding was written from the tools/call result
+    shape. resources/read (`contents[*].text`), prompts/get
+    (`messages[*].content.text`, `result.description`) and the prompts/resources
+    listings' descriptions are the same kind of agent-visible content, and were
+    protected before N4 narrowed the rewrite - so they stay in scope. Leaving
+    them out would have reopened an injection channel rather than protecting
+    protocol machinery."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate({"jsonrpc": "2.0", "id": 1, "result": result}, audit_path)
+
+    assert probe(gated["result"]) == REDACTION_NOTICE
+    assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
+
+
 def test_error_message_is_rewritten_but_other_error_members_are_not(tmp_path: Path):
     audit_path = tmp_path / "audit.jsonl"
     gated = _gate(

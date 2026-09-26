@@ -117,6 +117,26 @@ class _ListIndex:
 _INDEX = _ListIndex()
 
 
+# Rewritable positions inside a `result`, as {list-bearing member: allowed tails
+# within one of its elements}. A tail of () means the element itself is a string.
+# Everything here is content or a description the agent reads as server output;
+# nothing here is protocol machinery. The two content-block shapes are MCP's
+# `content` (tools/call, prompts) and `contents` (resources/read).
+_REWRITABLE_ELEMENT_TAILS: dict[str, set[tuple[str, ...]]] = {
+    "content": {(), ("text",), ("resource", "text")},
+    "contents": {("text",)},
+    "messages": {("content", "text"), ("content", "resource", "text")},
+    "tools": {("description",)},
+    "prompts": {("description",)},
+    "resources": {("description",)},
+    "resourceTemplates": {("description",)},
+}
+
+# Rewritable members directly under `result`: the prompt description a
+# prompts/get returns, and structuredContent (matched recursively, below).
+_REWRITABLE_RESULT_KEYS = {"description"}
+
+
 def _rewrite_allowed(path: tuple[Any, ...]) -> bool:
     """Whether the string leaf reached by `path` is one of the agent-visible
     content positions Aran rewrites (N4). `path` starts at the top-level member
@@ -127,9 +147,10 @@ def _rewrite_allowed(path: tuple[Any, ...]) -> bool:
     N1/R1), but rewriting the ones that are protocol machinery rather than
     content broke session/capability negotiation whenever a signature happened
     to match `protocolVersion`, `serverInfo.name`, `nextCursor` or a tool's
-    `name`. Those are now scanned-but-relayed-verbatim. `tools[*].description`
-    stays rewritable on purpose: a poisoned tool description is the real
-    injection vector the wider scanning was added for."""
+    `name`, and destroyed unrelated tools' metadata. Those are now
+    scanned-but-relayed-verbatim. Descriptions stay rewritable on purpose: a
+    poisoned tool description is the real injection vector the wider scanning was
+    added for."""
     root, rest = path[0], path[1:]
     if root == "error":
         return rest == ("message",)
@@ -143,13 +164,10 @@ def _rewrite_allowed(path: tuple[Any, ...]) -> bool:
     head = rest[0]
     if head == "structuredContent":
         return True  # recursively: all of it is tool output the agent reads
-    if head == "content" and len(rest) >= 2 and rest[1] is _INDEX:
-        tail = rest[2:]
-        # the block itself (a bare-string content block), its text, or an
-        # embedded resource's text - but not resource.uri/mimeType/annotations.
-        return tail in ((), ("text",), ("resource", "text"))
-    if head == "tools" and len(rest) >= 2 and rest[1] is _INDEX:
-        return rest[2:] == ("description",)
+    if len(rest) == 1:
+        return head in _REWRITABLE_RESULT_KEYS
+    if len(rest) >= 2 and rest[1] is _INDEX:
+        return rest[2:] in _REWRITABLE_ELEMENT_TAILS.get(head, ())
     return False
 
 

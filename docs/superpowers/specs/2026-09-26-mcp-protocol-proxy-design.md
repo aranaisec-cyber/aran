@@ -117,9 +117,14 @@ genuine server-originated requests and notifications carry neither and are still
 passed through unmodified. Every string leaf of a gated response is scanned, but
 only these content-bearing fields are ever **rewritten** with the redaction
 notice: `result.content[*]` (the block itself when it is a bare string, its
-`text`, and an embedded resource's `resource.text`), `result.structuredContent`
-(recursively), `error.message`, and `result.tools[*].description` - a poisoned
-tool description being a real injection vector. Other fields
+`text`, and an embedded resource's `resource.text`), `result.contents[*].text`
+(`resources/read`), `result.messages[*].content.text` and its embedded
+`resource.text` (`prompts/get`), `result.structuredContent` (recursively),
+`error.message`, `result.description`, and the `description` of each entry in
+`result.tools`, `result.prompts`, `result.resources` and
+`result.resourceTemplates` - a poisoned tool description being a real injection
+vector. A `result` that is not an object at all (a bare string or array, which
+MCP does not allow) is treated as content in full. Other fields
 (`protocolVersion`, `serverInfo.*`, `nextCursor`, a tool's `name`, resource URIs
 and metadata) are scanned-but-not-rewritten: a signature match there is recorded
 in the audit log for tuning, while the value is relayed verbatim, because
