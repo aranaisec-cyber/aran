@@ -8,3 +8,4 @@ build/
 .env
 *.log
 .claude/settings.local.json
+.worktrees/
