@@ -505,6 +505,6 @@ output_gate_signatures:
 - curl\s+.*\|\s*(sh|bash)
 - dd\s+if=
 - mkfs(\.\w+)?\s+
-- mv\s+.*+/dev/null
+- mv\s+.*/dev/null
 - rm\s+-[rfRF]+
 - wget\s+.*\|\s*(sh|bash)

@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 _write_lock = threading.Lock()
+_warned_lock = threading.Lock()
+_warned_about_failure = False
+
+
+def _warn_once(log_path: Path, error: Exception) -> None:
+    """Prints a single warning for the whole process life. Audit writes happen
+    on every gated message, so an unwritable log must not turn into thousands
+    of duplicate stderr lines (which would itself break an IDE's stdio)."""
+    global _warned_about_failure
+    with _warned_lock:
+        if _warned_about_failure:
+            return
+        _warned_about_failure = True
+    print(
+        f"[Aran] warning: could not write audit log {log_path}: {error}; "
+        "gating continues without an audit trail",
+        file=sys.stderr,
+    )
 
 
 def log_event(
@@ -17,8 +36,12 @@ def log_event(
     matched_signature: str | None,
 ) -> None:
     """Appends one JSON line to the audit log. direction is 'outbound' or
-    'inbound'; outcome is 'allowed' or 'blocked'. Thread-safe: the proxy's
-    two pump threads both call this concurrently."""
+    'inbound'; outcome is 'allowed', 'blocked' or 'error'. Thread-safe: the
+    proxy's two pump threads both call this concurrently.
+
+    A logging failure is never allowed to propagate: it would kill the pump
+    thread that called it and so disable the security gate itself. OSErrors
+    are swallowed after a one-time warning."""
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "direction": direction,
@@ -27,7 +50,10 @@ def log_event(
         "matched_signature": matched_signature,
     }
     line = json.dumps(event) + "\n"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with _write_lock:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with _write_lock:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except OSError as e:
+        _warn_once(log_path, e)

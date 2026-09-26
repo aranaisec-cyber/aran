@@ -15,7 +15,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # --- RESOLVE CONFIGURATION PATHS ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_RULE_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../config/default-rules.yaml"))
+# Lives inside the package (not a repo-root config/ dir) so that a real,
+# non-editable `pip install .` actually ships the signatures with the wheel.
+OUTPUT_RULE_PATH = os.path.normpath(
+    os.path.join(SCRIPT_DIR, "../src/mcp_shield/default-rules.yaml")
+)
 
 # --- PROMPT INJECTION SOURCE ---
 # deepset/prompt-injections: 662 labeled rows (text, label), label 1 = injection.
@@ -47,7 +51,9 @@ BASELINE_INJECTION_SIGNATURES = {
 BASELINE_COMMAND_SIGNATURES = {
     r"rm\s+-[rfRF]+",
     r"chmod\s+777",
-    r"mv\s+.*+/dev/null",
+    # No possessive "+" after ".*": ".*+" never backtracks, so "/dev/null"
+    # could never be reached and the pattern would match nothing at all.
+    r"mv\s+.*/dev/null",
     r"dd\s+if=",
     r"mkfs(\.\w+)?\s+",
     r">\s*/dev/sd[a-z]",

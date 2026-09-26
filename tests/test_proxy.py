@@ -61,6 +61,32 @@ def test_destructive_command_is_blocked_and_never_forwarded(tmp_path: Path, fake
     assert "ran run_command" not in json.dumps(responses)
 
 
+def test_tab_separated_destructive_command_is_also_blocked(tmp_path: Path, fake_server_command: list[str]):
+    """A literal tab becomes '\\t' once JSON-encoded, which \\s cannot match -
+    so gating the encoded text let `rm\\t-rf /` straight through to the real
+    server even though a shell treats it identically to `rm -rf /`."""
+    client_in = _requests_to_bytes([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "run_command", "arguments": {"command": "rm\t-rf /"}}},
+    ])
+    client_out = io.BytesIO()
+
+    run_proxy(
+        fake_server_command,
+        input_signatures=[],
+        output_signatures=[r"rm\s+-[rfRF]+"],
+        audit_log_path=tmp_path / "audit.jsonl",
+        client_in=client_in,
+        client_out=client_out,
+    )
+
+    responses = _parse_responses(client_out)
+    assert len(responses) == 1
+    assert responses[0]["error"]["code"] == -32000
+    # the fake server's marker for this call - its absence proves the tabbed
+    # command never reached the downstream server.
+    assert "ran run_command" not in json.dumps(responses)
+
+
 def test_injected_content_is_redacted_before_reaching_client(tmp_path: Path, fake_server_command: list[str]):
     audit_path = tmp_path / "audit.jsonl"
     client_in = _requests_to_bytes([

@@ -19,3 +19,8 @@ aran = "mcp_shield.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The signature file must ship inside the wheel; otherwise a non-editable
+# install falls back to the few hardcoded built-in signatures.
+[tool.setuptools.package-data]
+mcp_shield = ["default-rules.yaml"]

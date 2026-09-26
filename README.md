@@ -43,8 +43,9 @@ through. Every gated message is logged to `~/.aran/audit.jsonl`.
 
 ## Rule config
 
-Signatures live in `config/default-rules.yaml`. Refresh the prompt-injection
-signatures from a live labeled dataset with:
+Signatures live in `src/mcp_shield/default-rules.yaml`, which ships inside the
+installed package so a plain `pip install .` still has the full signature set.
+Refresh the prompt-injection signatures from a live labeled dataset with:
 
 ```bash
 python scripts/sync_threat_intel.py
