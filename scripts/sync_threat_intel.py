@@ -1,109 +1,143 @@
 import os
 import re
-import urllib.request
+import sys
 import json
+import urllib.request
+import urllib.parse
 from typing import Set
+
+import yaml
+
+# Windows consoles often default to cp1252, which can't encode the emoji in
+# the status messages below; force UTF-8 output so the script runs anywhere.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # --- RESOLVE CONFIGURATION PATHS ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_RULE_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../config/default-rules.yaml"))
 
-# --- PUBLIC CYBERSECURITY INTEL FEEDS ---
-# Curated public sets tracking active LLM vulnerabilities, jailbreaks, and OS malicious command payloads
-PROMPT_INJECTION_FEEDS = [
-    "https://raw.githubusercontent.com", # Garak LLM vulnerability analyzer payloads
-    "https://raw.githubusercontent.com"     # Community-curated prompt injection datasets
-]
+# --- PROMPT INJECTION SOURCE ---
+# deepset/prompt-injections: 662 labeled rows (text, label), label 1 = injection.
+# HF's datasets-server API returns rows as plain JSON, so no parquet/file-hash
+# guessing and no dependency on the dataset's internal file layout.
+HF_DATASET = "deepset/prompt-injections"
+HF_ROWS_URL = "https://datasets-server.huggingface.co/rows"
+HF_PAGE_SIZE = 100
+# Several label-1 rows in this dataset are "context hijacking" style: a
+# benign-sounding lead-in sentence with the actual injected instruction
+# appended after it. A short prefix would capture only the innocent lead-in
+# and false-positive on legitimate content, so signatures are cut generously
+# long instead of short - a longer literal match is also a *more* specific,
+# lower-false-positive signal, not a noisier one.
+MAX_SIGNATURE_LEN = 220
 
-MALICIOUS_COMMAND_FEEDS = [
-    "https://raw.githubusercontent.com" # Elastic Security OS metrics
-]
+# Destructive commands are a small, well-known set that doesn't benefit from a
+# live feed the way injection phrasing does, and a static list won't silently
+# break when an upstream repo restructures. Maintained by hand.
+BASELINE_INJECTION_SIGNATURES = {
+    "system override",
+    "ignore prior instructions",
+    "ignore previous instructions",
+    "forget your rules",
+    "disregard the system prompt",
+    "you are now an adversary",
+}
 
-def fetch_feed_content(url: str) -> str:
-    """Safely retrieves raw text datasets from target security infrastructure feeds."""
+BASELINE_COMMAND_SIGNATURES = {
+    r"rm\s+-[rfRF]+",
+    r"chmod\s+777",
+    r"mv\s+.*+/dev/null",
+    r"dd\s+if=",
+    r"mkfs(\.\w+)?\s+",
+    r">\s*/dev/sd[a-z]",
+    r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",  # fork bomb
+    r"curl\s+.*\|\s*(sh|bash)",
+    r"wget\s+.*\|\s*(sh|bash)",
+    r"curl\s+.*?\b(?:pastebin|webhook|exfil)\b",
+}
+
+
+def fetch_json(url: str) -> dict | None:
     try:
-        req = urllib.request.Request(
-            url, 
-            headers={'User-Agent': 'aran-threat-intel-sync/1.0'}
-        )
+        req = urllib.request.Request(url, headers={'User-Agent': 'aran-threat-intel-sync/1.0'})
         with urllib.request.urlopen(req, timeout=15) as response:
-            return response.read().decode('utf-8', errors='ignore')
+            return json.loads(response.read().decode('utf-8', errors='ignore'))
     except Exception as e:
-        print(f"⚠️ [WARNING] Failed to fetch data stream from {url}: {e}")
-        return ""
+        print(f"⚠️ [WARNING] Failed to fetch {url}: {e}")
+        return None
+
+
+def fetch_prompt_injection_signatures() -> Set[str]:
+    """Pulls labeled injection examples from the deepset/prompt-injections dataset."""
+    signatures: Set[str] = set()
+    offset = 0
+
+    while True:
+        params = urllib.parse.urlencode({
+            "dataset": HF_DATASET,
+            "config": "default",
+            "split": "train",
+            "offset": offset,
+            "length": HF_PAGE_SIZE,
+        })
+        data = fetch_json(f"{HF_ROWS_URL}?{params}")
+        if not data or not data.get("rows"):
+            break
+
+        for entry in data["rows"]:
+            row = entry.get("row", {})
+            if row.get("label") == 1:
+                clean_sig = str(row.get("text", "")).strip().lower()[:MAX_SIGNATURE_LEN]
+                if len(clean_sig) > 10:
+                    signatures.add(clean_sig)
+
+        if len(data["rows"]) < HF_PAGE_SIZE:
+            break
+        offset += HF_PAGE_SIZE
+
+    return signatures
+
 
 def build_intel_database():
-    print("🚀 [START] Synchronizing real-time MCP threat intelligence matrix...")
-    
-    unique_injections: Set[str] = set()
-    unique_commands: Set[str] = set()
+    print("🚀 [START] Synchronizing MCP threat intelligence matrix...")
 
-    # --- 1. HARVEST & PARSE PROMPT INJECTIONS ---
-    for feed in PROMPT_INJECTION_FEEDS:
-        content = fetch_feed_content(feed)
-        if not content:
-            continue
-            
-        # If the input data is JSON formatted (like the jailbreak dataset)
-        if feed.endswith('.json'):
-            try:
-                data = json.loads(content)
-                # Parse standard array models or structured datasets
-                entries = data if isinstance(data, list) else data.get("jailbreaks", [])
-                for item in entries:
-                    prompt = item.get("prompt", "") if isinstance(item, dict) else str(item)
-                    # Clean and capture short signature fragments to prevent engine performance lag
-                    clean_sig = prompt.strip().lower()[:60]
-                    if len(clean_sig) > 10:
-                        unique_injections.add(clean_sig)
-            except Exception:
-                pass
-        else:
-            # Parse line-by-line plaintext repositories
-            for line in content.splitlines():
-                clean_line = line.strip().lower()
-                if clean_line and not clean_line.startswith("#") and len(clean_line) > 8:
-                    unique_injections.add(clean_line[:60])
+    unique_injections = fetch_prompt_injection_signatures()
+    print(f"📥 Pulled {len(unique_injections)} labeled injection signatures from {HF_DATASET}.")
 
-    # --- 2. HARVEST & PARSE DESTRUCTIVE LINUX ACTIONS ---
-    for feed in MALICIOUS_COMMAND_FEEDS:
-        content = fetch_feed_content(feed)
-        if not content:
-            continue
-        # Extract command strings nested inside security configuration flags
-        matches = re.findall(r'process\.args\s*==\s*["\']([^"\']+)["\']', content)
-        for cmd in matches:
-            if len(cmd) > 2:
-                unique_commands.add(cmd.strip().lower())
+    unique_injections.update(BASELINE_INJECTION_SIGNATURES)
+    # Signatures are matched downstream via re.search() as regex patterns.
+    # Harvested (and hand-written) injection phrases are freeform text, not
+    # regex, so escape them to literal matches - otherwise stray metacharacters
+    # (seen in the wild: a bare leading "$", unbalanced parens, etc.) either
+    # raise re.error or silently change what the pattern matches.
+    unique_injections = {re.escape(sig) for sig in unique_injections}
+    # Destructive-command signatures are deliberately real regex (\s+, character
+    # classes, etc.) and must stay unescaped.
+    unique_commands = set(BASELINE_COMMAND_SIGNATURES)
 
-    # Ensure baseline critical signatures are hardcoded safety fallbacks
-    unique_injections.update(["system override", "ignore prior instructions", "forget your rules"])
-    unique_commands.update([r"rm\s+-[rfRF]+", r"chmod\s+777", r"mv\s+.*+/dev/null"])
-
-    # --- 3. WRITE SANITIZED UNIFIED RULES CONFIGURATION ---
+    # --- WRITE SANITIZED UNIFIED RULES CONFIGURATION ---
     os.makedirs(os.path.dirname(OUTPUT_RULE_PATH), exist_ok=True)
-    
+
     try:
+        rules = {
+            "input_gate_signatures": sorted(unique_injections),
+            "output_gate_signatures": sorted(unique_commands),
+        }
         with open(OUTPUT_RULE_PATH, 'w', encoding='utf-8') as f:
             f.write("# 🛡️ Aran Automated Threat Intelligence Profile\n")
             f.write("# Generated automatically via sync_threat_intel.py. Do not modify manually.\n\n")
-            
-            f.write("input_gate_signatures:\n")
-            for sig in sorted(unique_injections):
-                # Safely escape strings for schema parsing stability
-                escaped = sig.replace('"', '\\"')
-                f.write(f'  - "{escaped}"\n')
-                
-            f.write("\noutput_gate_signatures:\n")
-            for cmd in sorted(unique_commands):
-                escaped = cmd.replace('"', '\\"')
-                f.write(f'  - "{escaped}"\n')
-                
+            # yaml.safe_dump handles all quoting/escaping (backslashes, quotes,
+            # unicode) correctly, so hand-rolled string concatenation can't
+            # produce YAML that fails to parse back.
+            yaml.safe_dump(rules, f, allow_unicode=True, sort_keys=False)
+
         print(f"✅ [SUCCESS] Threat profile compiled successfully! Target: {OUTPUT_RULE_PATH}")
         print(f"📈 Sync Results: {len(unique_injections)} Injections | {len(unique_commands)} Malicious Commands mapped.")
-        
+
     except Exception as e:
         print(f"❌ [CRITICAL ERROR] Failed to output compiled rules database: {e}")
+
 
 if __name__ == "__main__":
     build_intel_database()
