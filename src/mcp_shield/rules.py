@@ -29,6 +29,10 @@ def load_rules(path: Path) -> tuple[list[str], list[str]]:
     except (OSError, yaml.YAMLError):
         return list(DEFAULT_INPUT_SIGNATURES), list(DEFAULT_OUTPUT_SIGNATURES)
 
+    # Ensure data is a dict; if not, treat as invalid and return defaults
+    if not isinstance(data, dict):
+        return list(DEFAULT_INPUT_SIGNATURES), list(DEFAULT_OUTPUT_SIGNATURES)
+
     input_sigs = data.get("input_gate_signatures") or DEFAULT_INPUT_SIGNATURES
     output_sigs = data.get("output_gate_signatures") or DEFAULT_OUTPUT_SIGNATURES
     return list(input_sigs), list(output_sigs)

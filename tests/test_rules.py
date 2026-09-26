@@ -50,3 +50,23 @@ def test_load_rules_empty_file_returns_defaults(tmp_path: Path):
 
     assert input_sigs == list(DEFAULT_INPUT_SIGNATURES)
     assert output_sigs == list(DEFAULT_OUTPUT_SIGNATURES)
+
+
+def test_load_rules_non_mapping_yaml_scalar_returns_defaults(tmp_path: Path):
+    rules_file = tmp_path / "scalar.yaml"
+    rules_file.write_text("just a plain scalar string, not a mapping", encoding="utf-8")
+
+    input_sigs, output_sigs = load_rules(rules_file)
+
+    assert input_sigs == list(DEFAULT_INPUT_SIGNATURES)
+    assert output_sigs == list(DEFAULT_OUTPUT_SIGNATURES)
+
+
+def test_load_rules_non_mapping_yaml_list_returns_defaults(tmp_path: Path):
+    rules_file = tmp_path / "list.yaml"
+    rules_file.write_text("- a\n- b\n", encoding="utf-8")
+
+    input_sigs, output_sigs = load_rules(rules_file)
+
+    assert input_sigs == list(DEFAULT_INPUT_SIGNATURES)
+    assert output_sigs == list(DEFAULT_OUTPUT_SIGNATURES)
