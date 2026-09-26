@@ -1,7 +1,15 @@
+import re
+
 import pytest
 
-from mcp_shield.gates import check_input, check_output, find_signature_match
-from mcp_shield.rules import DEFAULT_OUTPUT_SIGNATURES
+from mcp_shield.gates import (
+    CompiledSignature,
+    check_input,
+    check_output,
+    compile_signatures,
+    find_signature_match,
+)
+from mcp_shield.rules import DEFAULT_INPUT_SIGNATURES, DEFAULT_OUTPUT_SIGNATURES
 
 
 def test_find_signature_match_returns_matching_pattern():
@@ -113,3 +121,47 @@ def test_find_signature_match_still_matches_lowercase_patterns_against_mixed_cas
         "Please IGNORE PREVIOUS INSTRUCTIONS now",
         ["ignore previous instructions"],
     ) == "ignore previous instructions"
+
+
+# --- N3: signatures are compiled once, not per string leaf ------------------
+
+def test_compile_signatures_returns_compiled_patterns():
+    compiled = compile_signatures(["ignore previous instructions", r"rm\s+-rf"])
+    assert [type(e) for e in compiled] == [CompiledSignature, CompiledSignature]
+    assert all(isinstance(e.pattern, re.Pattern) for e in compiled)
+    assert [e.source for e in compiled] == ["ignore previous instructions", r"rm\s+-rf"]
+
+
+def test_compile_signatures_drops_unusable_entries_once():
+    """The per-call guard in find_signature_match skipped a bad regex on every
+    single match; compiling drops it once instead. Same net behaviour."""
+    compiled = compile_signatures(["(unbalanced", 123, None, "clean"])
+    assert [e.source for e in compiled] == ["clean"]
+
+
+def test_compile_signatures_is_idempotent():
+    once = compile_signatures(DEFAULT_INPUT_SIGNATURES)
+    assert compile_signatures(once) == once
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Please IGNORE PREVIOUS INSTRUCTIONS now", "ignore previous instructions"),
+    ("key AKIAIOSFODNN7EXAMPLE leaked", "AKIA[0-9A-Z]{16}"),
+    ("nothing to see here", None),
+])
+def test_compiled_signatures_match_exactly_like_the_string_path(text, expected):
+    signatures = ["ignore previous instructions", "AKIA[0-9A-Z]{16}"]
+    assert find_signature_match(text, signatures) == expected
+    assert find_signature_match(text, compile_signatures(signatures)) == expected
+
+
+def test_gates_accept_compiled_signatures():
+    compiled_out = compile_signatures([r"rm\s+-[rfRF]+"])
+    assert check_output("run_command", {"command": "rm -rf /"}, compiled_out) == r"rm\s+-[rfRF]+"
+    assert check_output("run_command", {"command": "ls -la"}, compiled_out) is None
+
+    compiled_in = compile_signatures(["ignore previous instructions"])
+    assert check_input("ignore previous instructions now", compiled_in) == (
+        "ignore previous instructions"
+    )
+    assert check_input("all clear", compiled_in) is None
