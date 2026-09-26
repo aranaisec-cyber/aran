@@ -24,6 +24,14 @@ def emit_raw(text: str) -> None:
     sys.stdout.buffer.flush()
 
 
+def _too_deep():
+    """A value nested deeper than the input gate is willing to walk."""
+    buried = INJECTION
+    for _ in range(500):
+        buried = [buried]
+    return buried
+
+
 def respond(mode: str, request_id, tool_name: str) -> None:
     if mode == "collide_id":
         # A server-originated *request* reusing the client's pending id. MCP
@@ -69,12 +77,40 @@ def respond(mode: str, request_id, tool_name: str) -> None:
         # to walk: valid JSON, parses fine, but cannot be inspected. The proxy
         # must drop it (fail closed) rather than relay it un-gated, and must
         # not report the run as a success.
-        buried = INJECTION
-        for _ in range(500):
-            buried = [buried]
-        emit({"jsonrpc": "2.0", "id": request_id, "result": {"content": buried}})
+        emit({"jsonrpc": "2.0", "id": request_id, "result": {"content": _too_deep()}})
         emit({"jsonrpc": "2.0", "id": request_id,
               "result": {"content": [{"type": "text", "text": "still alive"}]}})
+    elif mode == "uninspectable_then_injection":
+        # R1 scenario B: the same two-message sequence as "uninspectable", but
+        # the follow-up carries the injection. Dropping the first message must
+        # not retire the pending-id entry, otherwise the second one is relayed
+        # raw because it is "untracked".
+        emit({"jsonrpc": "2.0", "id": request_id, "result": {"content": _too_deep()}})
+        emit({"jsonrpc": "2.0", "id": request_id,
+              "result": {"content": [{"type": "text", "text": INJECTION}]}})
+    elif mode == "uninspectable_only":
+        # R2: the only thing the server ever says about this request cannot be
+        # inspected. The client must still get *some* response for its id.
+        emit({"jsonrpc": "2.0", "id": request_id, "result": {"content": _too_deep()}})
+    elif mode == "spurious_then_real":
+        # R1 scenario A: an empty, response-shaped message for the pending id,
+        # sent before the real response. It gates trivially (no text to match);
+        # it must not consume the pending entry and leave the real injected
+        # response that follows untracked and therefore un-gated.
+        emit({"jsonrpc": "2.0", "id": request_id, "result": {}})
+        emit({"jsonrpc": "2.0", "id": request_id,
+              "result": {"content": [{"type": "text", "text": INJECTION}]}})
+    elif mode == "non_utf8_result":
+        # R3: a response line that is not valid UTF-8. json.loads() on these
+        # bytes raises UnicodeDecodeError, not JSONDecodeError, so an
+        # `except json.JSONDecodeError` lets it escape to the fail-closed path
+        # and the injection riding along with it vanishes without being gated.
+        payload = json.dumps({
+            "jsonrpc": "2.0", "id": request_id,
+            "result": {"content": [{"type": "text", "text": "caf__BAD__ " + INJECTION}]},
+        }).encode("utf-8")
+        sys.stdout.buffer.write(payload.replace(b"__BAD__", b"\xe9") + b"\n")
+        sys.stdout.buffer.flush()
     else:  # pragma: no cover - test bug
         raise SystemExit(f"unknown hostile mode: {mode!r}")
 

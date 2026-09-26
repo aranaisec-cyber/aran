@@ -24,6 +24,13 @@ REDACTION_NOTICE = "[Aran] content blocked: flagged as a probable prompt injecti
 # shallow; deeper is either a bug or a payload aimed at the recursion limit.
 _MAX_WALK_DEPTH = 200
 
+# Cap on the pending tool-call map. Entries are no longer consumed when a
+# response arrives (see _gate_inbound_message), so they are evicted oldest-first
+# at registration time instead. The map only supplies the tool_name label for
+# inbound audit records, so losing the oldest entries in a session with more
+# than this many in-flight calls costs an audit label, never a gate check.
+_MAX_PENDING_TOOL_CALLS = 4096
+
 
 def _write_line(stream: BinaryIO, lock: threading.Lock, data: bytes) -> None:
     with lock:
@@ -54,13 +61,24 @@ def _usable_request_id(value: Any) -> RequestId:
     return None
 
 
+def _decode_json_line(line: bytes) -> Any:
+    """Parses one wire line as JSON, decoding it explicitly and lossily first.
+
+    json.loads() on bytes that are not valid UTF-8 raises UnicodeDecodeError,
+    which is a ValueError *sibling* of json.JSONDecodeError rather than a
+    subclass - so it escapes an `except json.JSONDecodeError` and carries an
+    otherwise perfectly inspectable message off to the fail-closed path (R3).
+    Decoding with errors="replace" keeps the message inspectable: the gate sees
+    the text and only the undecodable bytes themselves are lost."""
+    return json.loads(line.decode("utf-8", errors="replace"))
+
+
 def _is_response(message: dict) -> bool:
     """True only for a JSON-RPC *response*. MCP is bidirectional: the server
     issues its own requests and notifications (ping, sampling/createMessage,
     roots/list, elicitation/create) numbered from its own id counter, so
-    server ids collide with the client's. Treating those as responses would
-    consume the pending tool-call entry and silently disable the input gate
-    for the real response that arrives later (C1)."""
+    server ids collide with the client's. Those are passed through unmodified
+    by design; only response-shaped messages are gated."""
     return "method" not in message and ("result" in message or "error" in message)
 
 
@@ -79,9 +97,11 @@ def _redact_strings(
     resource.text. Applied to message["error"] too, so injected text in
     error.message is inspected as well.
 
-    Intentionally out of scope for v1: tools/list tool descriptions and
-    server-originated requests/notifications, which the design specifies are
-    passed through unmodified."""
+    Applied to every response-shaped inbound message since R1, which widens
+    coverage to responses the proxy is not tracking - including tools/list tool
+    descriptions, previously out of scope for v1. Server-originated requests and
+    notifications remain out of scope and are passed through unmodified, as the
+    design specifies; `_is_response` is what keeps them out."""
     if depth > _MAX_WALK_DEPTH:
         raise ValueError("server result nested too deeply to inspect")
     if isinstance(value, str):
@@ -111,8 +131,8 @@ def _gate_outbound_message(
     forward to the server, or None if the call was blocked (in which case the
     error response has already been written back to the client)."""
     try:
-        message = json.loads(line)
-    except json.JSONDecodeError:
+        message = _decode_json_line(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return line
 
     # A valid-JSON line that isn't an object has no method/params to gate.
@@ -155,6 +175,11 @@ def _gate_outbound_message(
     # response can come back before the id is registered.
     with pending_lock:
         pending_tool_calls[request_id] = tool_name
+        # Bounded oldest-first, because the inbound side no longer removes
+        # entries: whether an id is tracked must never decide whether a
+        # response is gated (R1), so eviction is decoupled from gating.
+        while len(pending_tool_calls) > _MAX_PENDING_TOOL_CALLS:
+            del pending_tool_calls[next(iter(pending_tool_calls))]
     return line
 
 
@@ -225,7 +250,7 @@ def _pump_client_to_server(
 
 def _safe_peek_id(line: bytes) -> RequestId:
     try:
-        message = json.loads(line)
+        message = _decode_json_line(line)
     except Exception:  # noqa: BLE001 - best-effort id recovery only
         return None
     if not isinstance(message, dict):
@@ -242,10 +267,22 @@ def _gate_inbound_message(
     pending_lock: threading.Lock,
 ) -> bytes:
     """Applies the input gate to one server->client line, returning the bytes
-    to hand to the client (redacted if a signature matched)."""
+    to hand to the client (redacted if a signature matched).
+
+    The gate runs on *every* response-shaped message, whether or not its id is
+    one the proxy is tracking. Making a pending-id lookup the precondition for
+    gating was the root cause behind C1/C2 (R1): because the lookup consumed
+    the entry, any message a hostile server could get past the gate cheaply -
+    an empty `{"id":1,"result":{}}`, or one deliberately crafted to be
+    un-inspectable and dropped - retired the tracking entry, and the real
+    injected response that followed for the same id was then "untracked" and
+    relayed to the agent raw. There is deliberately no longer any message shape
+    that skips the gate by virtue of not being tracked; pending_tool_calls is
+    now only a lookup (.get, never .pop) supplying the audit record's
+    tool_name label."""
     try:
-        message = json.loads(line)
-    except json.JSONDecodeError:
+        message = _decode_json_line(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return line
 
     if not isinstance(message, dict) or not _is_response(message):
@@ -253,9 +290,7 @@ def _gate_inbound_message(
 
     request_id = _usable_request_id(message.get("id"))
     with pending_lock:
-        tool_name = pending_tool_calls.pop(request_id, None)
-    if tool_name is None:
-        return line
+        tool_name = pending_tool_calls.get(request_id)
 
     matches: list[str] = []
     for key in ("result", "error"):
@@ -314,6 +349,20 @@ def _pump_server_to_client(
                     outcome="error",
                     matched_signature=None,
                 )
+                # Dropping the message must not also drop the *reply*: if this
+                # was the only answer to a request the IDE is still waiting on,
+                # silence hangs it forever (R2). Mirror the outbound half of
+                # this policy and synthesize an error for the recovered id.
+                request_id = _safe_peek_id(line)
+                if request_id is not None:
+                    _write_line(
+                        client_out,
+                        client_out_lock,
+                        _blocked_response(
+                            request_id,
+                            "[Aran] blocked: inbound message could not be inspected",
+                        ),
+                    )
                 continue
             _write_line(client_out, client_out_lock, out_line)
     finally:
@@ -344,8 +393,8 @@ def run_proxy(
 ) -> int:
     """Spawns `command` as the real MCP server and relays JSON-RPC between
     client_in/client_out (the IDE side) and the child's stdio, applying the
-    output gate to outbound tools/call requests and the input gate to
-    inbound tool-call results. Returns the child process's exit code, or
+    output gate to outbound tools/call requests and the input gate to every
+    inbound JSON-RPC response. Returns the child process's exit code, or
     EXIT_PROXY_DEGRADED if the relay itself failed while the child exited 0."""
     child = subprocess.Popen(
         command,
