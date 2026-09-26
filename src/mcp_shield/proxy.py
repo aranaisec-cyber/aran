@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
 from mcp_shield.audit import log_event
-from mcp_shield.gates import check_input, check_output
+from mcp_shield.gates import SignatureList, check_input, check_output, compile_signatures
 
 RequestId = int | str | None
 
@@ -62,65 +62,153 @@ def _usable_request_id(value: Any) -> RequestId:
 
 
 def _decode_json_line(line: bytes) -> Any:
-    """Parses one wire line as JSON, decoding it explicitly and lossily first.
+    """Parses one wire line as JSON, preserving json's own encoding detection.
 
-    json.loads() on bytes that are not valid UTF-8 raises UnicodeDecodeError,
-    which is a ValueError *sibling* of json.JSONDecodeError rather than a
-    subclass - so it escapes an `except json.JSONDecodeError` and carries an
-    otherwise perfectly inspectable message off to the fail-closed path (R3).
-    Decoding with errors="replace" keeps the message inspectable: the gate sees
-    the text and only the undecodable bytes themselves are lost."""
-    return json.loads(line.decode("utf-8", errors="replace"))
+    json.loads() on bytes sniffs the encoding from a BOM (utf-8-sig, utf-16,
+    utf-32), so it must get the raw bytes first: forcing
+    line.decode("utf-8", errors="replace") threw that detection away and turned
+    a BOM-prefixed or UTF-16 line into an unparseable one, which the inbound
+    pump then relayed raw and un-gated (N2).
+
+    Only when the bytes are not decodable at all does the lossy fallback apply.
+    json.loads() raises UnicodeDecodeError there, a ValueError *sibling* of
+    json.JSONDecodeError rather than a subclass, so it escapes an
+    `except json.JSONDecodeError` and would otherwise carry a perfectly
+    inspectable message off to the fail-closed path (R3). Decoding with
+    errors="replace" keeps the message inspectable: the gate sees the text and
+    only the undecodable bytes themselves are lost."""
+    try:
+        return json.loads(line)
+    except UnicodeDecodeError:
+        return json.loads(line.decode("utf-8", errors="replace"))
+
+
+def _encode_json_line(message: Any) -> bytes:
+    return (json.dumps(message) + "\n").encode("utf-8")
 
 
 def _is_response(message: dict) -> bool:
-    """True only for a JSON-RPC *response*. MCP is bidirectional: the server
-    issues its own requests and notifications (ping, sampling/createMessage,
-    roots/list, elicitation/create) numbered from its own id counter, so
-    server ids collide with the client's. Those are passed through unmodified
-    by design; only response-shaped messages are gated."""
-    return "method" not in message and ("result" in message or "error" in message)
+    """True for anything response-shaped: a `result` or an `error` member is
+    present, whatever else the message carries.
+
+    The decision deliberately does NOT look at `method`. MCP is bidirectional -
+    the server issues its own requests and notifications (ping,
+    sampling/createMessage, roots/list, elicitation/create) and those are passed
+    through unmodified by design - but a genuine request or notification never
+    carries `result`/`error`, so keying off those two members is enough to let
+    real server-originated traffic through. Keying off the *absence of a method
+    key* was not: `{"id":1,"method":null,"result":{...injection...}}` (likewise
+    `"method":0` and `"method":""`) skipped the gate entirely while a client that
+    resolves messages structurally - id + result means response - still delivered
+    the payload (N1). The proxy's guarantee must not depend on the IDE's parser
+    being stricter than the proxy's own."""
+    return "result" in message or "error" in message
 
 
-def _redact_strings(
+class _ListIndex:
+    """Marks 'an element of a list' in a redaction path."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "[*]"
+
+
+_INDEX = _ListIndex()
+
+
+def _rewrite_allowed(path: tuple[Any, ...]) -> bool:
+    """Whether the string leaf reached by `path` is one of the agent-visible
+    content positions Aran rewrites (N4). `path` starts at the top-level member
+    being walked - ("result", ...) or ("error", ...) - with _INDEX standing in
+    for a list position.
+
+    Every string leaf is *scanned* (that is what closes the bypass class behind
+    N1/R1), but rewriting the ones that are protocol machinery rather than
+    content broke session/capability negotiation whenever a signature happened
+    to match `protocolVersion`, `serverInfo.name`, `nextCursor` or a tool's
+    `name`. Those are now scanned-but-relayed-verbatim. `tools[*].description`
+    stays rewritable on purpose: a poisoned tool description is the real
+    injection vector the wider scanning was added for."""
+    root, rest = path[0], path[1:]
+    if root == "error":
+        return rest == ("message",)
+    # root == "result"
+    if not rest:
+        # `result` is itself a string: a non-conformant result (MCP requires an
+        # object) carrying content directly. Nothing to preserve for the
+        # protocol's sake, so it is treated as content. See _gate_response_object
+        # for the list/scalar case.
+        return True
+    head = rest[0]
+    if head == "structuredContent":
+        return True  # recursively: all of it is tool output the agent reads
+    if head == "content" and len(rest) >= 2 and rest[1] is _INDEX:
+        tail = rest[2:]
+        # the block itself (a bare-string content block), its text, or an
+        # embedded resource's text - but not resource.uri/mimeType/annotations.
+        return tail in ((), ("text",), ("resource", "text"))
+    if head == "tools" and len(rest) >= 2 and rest[1] is _INDEX:
+        return rest[2:] == ("description",)
+    return False
+
+
+def _scan_and_redact(
     value: Any,
-    signatures: list[str],
+    signatures: SignatureList,
     matches: list[str],
+    redactions: list[str],
+    *,
+    path: tuple[Any, ...],
     depth: int = 0,
+    force_rewrite: bool = False,
 ) -> Any:
-    """Recursively replaces every string leaf that matches an input-gate
-    signature with the redaction notice, collecting what matched.
+    """Walks every string leaf under `value`, checking each against the input
+    gate and replacing the ones in a rewritable position with the redaction
+    notice.
 
     Walking the whole decoded result (rather than only result.content[*].text)
     covers the channels that otherwise reach the agent unchecked: bare-string
-    content blocks, result.structuredContent, and embedded-resource blocks'
-    resource.text. Applied to message["error"] too, so injected text in
-    error.message is inspected as well.
+    content blocks, result.structuredContent, embedded-resource blocks'
+    resource.text, tools/list descriptions, and error.message.
 
-    Applied to every response-shaped inbound message since R1, which widens
-    coverage to responses the proxy is not tracking - including tools/list tool
-    descriptions, previously out of scope for v1. Server-originated requests and
-    notifications remain out of scope and are passed through unmodified, as the
-    design specifies; `_is_response` is what keeps them out."""
+    `matches` collects everything that matched (for audit visibility);
+    `redactions` collects only what was actually rewritten, which is what makes
+    a message "blocked". See _rewrite_allowed for the rewrite allowlist."""
     if depth > _MAX_WALK_DEPTH:
         raise ValueError("server result nested too deeply to inspect")
     if isinstance(value, str):
         matched = check_input(value, signatures)
-        if matched:
-            matches.append(matched)
+        if matched is None:
+            return value
+        matches.append(matched)
+        if force_rewrite or _rewrite_allowed(path):
+            redactions.append(matched)
             return REDACTION_NOTICE
         return value
     if isinstance(value, dict):
-        return {k: _redact_strings(v, signatures, matches, depth + 1) for k, v in value.items()}
+        return {
+            k: _scan_and_redact(
+                v, signatures, matches, redactions,
+                path=path + (k,), depth=depth + 1, force_rewrite=force_rewrite,
+            )
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_redact_strings(item, signatures, matches, depth + 1) for item in value]
+        return [
+            _scan_and_redact(
+                item, signatures, matches, redactions,
+                path=path + (_INDEX,), depth=depth + 1, force_rewrite=force_rewrite,
+            )
+            for item in value
+        ]
     return value
 
 
 def _gate_outbound_message(
     line: bytes,
     *,
-    output_signatures: list[str],
+    output_signatures: SignatureList,
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
@@ -189,7 +277,7 @@ def _pump_client_to_server(
     server_in: BinaryIO,
     client_out: BinaryIO,
     client_out_lock: threading.Lock,
-    output_signatures: list[str],
+    output_signatures: SignatureList,
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
@@ -253,15 +341,69 @@ def _safe_peek_id(line: bytes) -> RequestId:
         message = _decode_json_line(line)
     except Exception:  # noqa: BLE001 - best-effort id recovery only
         return None
+    if isinstance(message, list):
+        # A batch that had to be dropped: answer for the first id in it, so a
+        # client waiting on that request still gets a reply (R2) instead of
+        # hanging. One synthesized error is all a single line can carry back.
+        for element in message:
+            if isinstance(element, dict) and "id" in element:
+                return _usable_request_id(element.get("id"))
+        return None
     if not isinstance(message, dict):
         return None
     return _usable_request_id(message.get("id"))
 
 
+def _gate_response_object(
+    message: dict,
+    *,
+    input_signatures: SignatureList,
+    audit_log_path: Path,
+    pending_tool_calls: dict[RequestId, str],
+    pending_lock: threading.Lock,
+) -> None:
+    """Gates one response-shaped JSON-RPC object in place, and audits it."""
+    request_id = _usable_request_id(message.get("id"))
+    with pending_lock:
+        tool_name = pending_tool_calls.get(request_id)
+
+    matches: list[str] = []
+    redactions: list[str] = []
+    for key in ("result", "error"):
+        if key in message:
+            value = message[key]
+            # A result/error that is not an object at all (a bare string, a
+            # list) is non-conformant: it holds no protocol machinery to
+            # preserve, only content, so everything in it is rewritable (C2).
+            message[key] = _scan_and_redact(
+                value,
+                input_signatures,
+                matches,
+                redactions,
+                path=(key,),
+                force_rewrite=not isinstance(value, dict),
+            )
+
+    log_event(
+        audit_log_path,
+        direction="inbound",
+        tool_name=tool_name,
+        # "blocked" means content was actually rewritten. A match in a
+        # scanned-but-not-rewritten field (protocolVersion, tool name, resource
+        # uri, ... - see _rewrite_allowed) is still named in the record for
+        # false-positive tuning, but the message was relayed as it arrived.
+        outcome="blocked" if redactions else "allowed",
+        # Only the first match is recorded: the audit field is a single string
+        # and one matched rule is what an operator needs to tune a false
+        # positive. The payload itself is deliberately never logged or echoed.
+        matched_signature=(redactions or matches or [None])[0],
+    )
+
+
 def _gate_inbound_message(
     line: bytes,
     *,
-    input_signatures: list[str],
+    input_signatures: SignatureList,
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
@@ -279,35 +421,51 @@ def _gate_inbound_message(
     relayed to the agent raw. There is deliberately no longer any message shape
     that skips the gate by virtue of not being tracked; pending_tool_calls is
     now only a lookup (.get, never .pop) supplying the audit record's
-    tool_name label."""
-    try:
-        message = _decode_json_line(line)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    tool_name label.
+
+    A parse failure is NOT swallowed here: it propagates so the caller's
+    fail-closed path drops the line instead of relaying content the gate never
+    saw (N2). Top-level arrays (JSON-RPC batches) are unpacked and their
+    response-shaped elements gated individually, because `isinstance(message,
+    dict)` being false was itself a raw-relay bypass (N1)."""
+    if not line.strip():
+        # A blank line (keepalive, trailing newline) carries nothing to inspect.
+        # It must not take the fail-closed path: that would degrade the whole
+        # session over a harmless line.
         return line
 
-    if not isinstance(message, dict) or not _is_response(message):
-        return line
+    message = _decode_json_line(line)
 
-    request_id = _usable_request_id(message.get("id"))
-    with pending_lock:
-        tool_name = pending_tool_calls.get(request_id)
-
-    matches: list[str] = []
-    for key in ("result", "error"):
-        if key in message:
-            message[key] = _redact_strings(message[key], input_signatures, matches)
-
-    log_event(
-        audit_log_path,
-        direction="inbound",
-        tool_name=tool_name,
-        outcome="blocked" if matches else "allowed",
-        # Only the first match is recorded: the audit field is a single string
-        # and one matched rule is what an operator needs to tune a false
-        # positive. The payload itself is deliberately never logged or echoed.
-        matched_signature=matches[0] if matches else None,
+    gate = dict(
+        input_signatures=input_signatures,
+        audit_log_path=audit_log_path,
+        pending_tool_calls=pending_tool_calls,
+        pending_lock=pending_lock,
     )
-    return (json.dumps(message) + "\n").encode("utf-8")
+
+    if isinstance(message, dict):
+        if not _is_response(message):
+            return line
+        _gate_response_object(message, **gate)
+        return _encode_json_line(message)
+
+    if isinstance(message, list):
+        # JSON-RPC 2.0 batch framing (also in MCP's 2025-03-26 revision): gate
+        # every response-shaped element, leave server-originated elements alone,
+        # and hand the batch back with its framing intact.
+        gated = False
+        for element in message:
+            if isinstance(element, dict) and _is_response(element):
+                _gate_response_object(element, **gate)
+                gated = True
+        if not gated:
+            return line
+        return _encode_json_line(message)
+
+    # Valid JSON that is neither an object nor an array (a bare scalar) cannot
+    # be a JSON-RPC message at all and carries no response for a client to
+    # unpack; it is relayed as-is.
+    return line
 
 
 def _pump_server_to_client(
@@ -315,7 +473,7 @@ def _pump_server_to_client(
     server_out: BinaryIO,
     client_out: BinaryIO,
     client_out_lock: threading.Lock,
-    input_signatures: list[str],
+    input_signatures: SignatureList,
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
@@ -385,8 +543,8 @@ def _run_pump(target: Callable[..., None], kwargs: dict, degraded: threading.Eve
 def run_proxy(
     command: list[str],
     *,
-    input_signatures: list[str],
-    output_signatures: list[str],
+    input_signatures: SignatureList,
+    output_signatures: SignatureList,
     audit_log_path: Path,
     client_in: BinaryIO,
     client_out: BinaryIO,
@@ -395,7 +553,15 @@ def run_proxy(
     client_in/client_out (the IDE side) and the child's stdio, applying the
     output gate to outbound tools/call requests and the input gate to every
     inbound JSON-RPC response. Returns the child process's exit code, or
-    EXIT_PROXY_DEGRADED if the relay itself failed while the child exited 0."""
+    EXIT_PROXY_DEGRADED if the relay itself failed while the child exited 0.
+
+    Signatures are compiled once here rather than per string leaf: the input
+    gate now runs over every leaf of every response, so re-resolving ~200
+    patterns through re.search() per leaf cost seconds on a large payload and
+    made the single-threaded inbound relay look like a hang (N3)."""
+    compiled_input = compile_signatures(input_signatures)
+    compiled_output = compile_signatures(output_signatures)
+
     child = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -418,7 +584,7 @@ def run_proxy(
                 server_in=child.stdin,
                 client_out=client_out,
                 client_out_lock=client_out_lock,
-                output_signatures=output_signatures,
+                output_signatures=compiled_output,
                 audit_log_path=audit_log_path,
                 pending_tool_calls=pending_tool_calls,
                 pending_lock=pending_lock,
@@ -436,7 +602,7 @@ def run_proxy(
                 server_out=child.stdout,
                 client_out=client_out,
                 client_out_lock=client_out_lock,
-                input_signatures=input_signatures,
+                input_signatures=compiled_input,
                 audit_log_path=audit_log_path,
                 pending_tool_calls=pending_tool_calls,
                 pending_lock=pending_lock,

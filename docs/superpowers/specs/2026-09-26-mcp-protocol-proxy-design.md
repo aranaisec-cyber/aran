@@ -105,6 +105,27 @@ stdin/stdout) and the wrapped server (child stdin/stdout):
 Every message evaluated by either gate (allowed or blocked) is appended to
 the audit log (§3.4) regardless of outcome.
 
+**Deviation from the above, as implemented:** the input gate scans **every
+inbound response**, not only results for `tools/call` requests Aran is tracking.
+Making a tracked request id (or the absence of a `method` key, or the message
+being a top-level object rather than a batch array) the precondition for gating
+gave a hostile server several cheap ways to have content relayed un-gated - id
+collisions, a spurious early response for a pending id, `"method": null`
+alongside a real `result`, or a one-element JSON-RPC batch array. A message is
+now gated whenever it carries a `result` or an `error` member, wherever it sits;
+genuine server-originated requests and notifications carry neither and are still
+passed through unmodified. Every string leaf of a gated response is scanned, but
+only these content-bearing fields are ever **rewritten** with the redaction
+notice: `result.content[*]` (the block itself when it is a bare string, its
+`text`, and an embedded resource's `resource.text`), `result.structuredContent`
+(recursively), `error.message`, and `result.tools[*].description` - a poisoned
+tool description being a real injection vector. Other fields
+(`protocolVersion`, `serverInfo.*`, `nextCursor`, a tool's `name`, resource URIs
+and metadata) are scanned-but-not-rewritten: a signature match there is recorded
+in the audit log for tuning, while the value is relayed verbatim, because
+rewriting protocol machinery broke session/capability negotiation and destroyed
+unrelated tools' metadata without protecting the agent.
+
 ### 3.3 Config
 Rule signatures are loaded once at startup from
 `config/default-rules.yaml`, reusing its existing shape:
