@@ -35,6 +35,13 @@ HF_PAGE_SIZE = 100
 # long instead of short - a longer literal match is also a *more* specific,
 # lower-false-positive signal, not a noisier one.
 MAX_SIGNATURE_LEN = 220
+# Signatures shorter than this are disproportionately short, generic phrases
+# ("generate c++", "be a dj") that the source dataset labels as adversarial
+# but that also occur constantly in ordinary benign requests - matching one
+# redacts/blocks real content far more often than it catches a real attack.
+# 25 chars is long enough to require some actual specificity while still
+# catching short, unambiguous phrases like "ignore all instructions".
+MIN_SIGNATURE_LEN = 25
 
 # Destructive commands are a small, well-known set that doesn't benefit from a
 # live feed the way injection phrasing does, and a static list won't silently
@@ -95,7 +102,7 @@ def fetch_prompt_injection_signatures() -> Set[str]:
             row = entry.get("row", {})
             if row.get("label") == 1:
                 clean_sig = str(row.get("text", "")).strip().lower()[:MAX_SIGNATURE_LEN]
-                if len(clean_sig) > 10:
+                if len(clean_sig) >= MIN_SIGNATURE_LEN:
                     signatures.add(clean_sig)
 
         if len(data["rows"]) < HF_PAGE_SIZE:

@@ -1,0 +1,56 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. If this is a **security vulnerability**
+        (a gate bypass, a hang/crash triggerable by a hostile downstream
+        server, etc.), please use [private vulnerability reporting](../../security/advisories/new)
+        instead of a public issue — see SECURITY.md.
+
+  - type: input
+    id: version
+    attributes:
+      label: Aran version
+      description: Output of `pip show mcp-shield`
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS / Python version
+      placeholder: "e.g. Windows 11 / Python 3.12"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including the downstream MCP server you wrapped (if relevant).
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Include the exact `aran -- ...` invocation and, if possible, a minimal MCP server/request that triggers it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant audit log entries or stderr output
+      render: shell

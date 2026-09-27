@@ -1,21 +1,55 @@
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 for PEP 639 SPDX `license = "MIT"` / `license-files` support.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-shield"
 version = "0.1.0"
-description = "Aran's transparent security proxy for MCP stdio servers"
+description = "Aran — a transparent security proxy for MCP stdio servers: blocks destructive tool calls and redacts prompt-injection payloads before they reach your agent or your machine."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [
+    { name = "Aran" },
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "security",
+    "prompt-injection",
+    "ai-agents",
+    "llm-security",
+    "proxy",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "build>=1.0"]
 
 [project.scripts]
 aran = "mcp_shield.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/REPLACE_ME/mcp-shield"
+Repository = "https://github.com/REPLACE_ME/mcp-shield"
+Issues = "https://github.com/REPLACE_ME/mcp-shield/issues"
+Security = "https://github.com/REPLACE_ME/mcp-shield/security/policy"
 
 [tool.setuptools.packages.find]
 where = ["src"]

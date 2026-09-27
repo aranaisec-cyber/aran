@@ -1,0 +1,26 @@
+name: Signature false positive
+description: Benign content was redacted/blocked because it matched a signature
+labels: ["false-positive", "signatures"]
+body:
+  - type: textarea
+    id: signature
+    attributes:
+      label: The matched signature
+      description: Check the audit log (`~/.aran/audit.jsonl`) for `matched_signature`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: content
+    attributes:
+      label: The benign text/command that triggered it
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Was this an outbound tool call (destructive-command gate) or inbound tool result (injection gate)? What tool/server were you using?
+    validations:
+      required: true

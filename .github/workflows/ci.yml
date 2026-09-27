@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: pytest -v
+
+  package:
+    name: Verify packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and sdist
+        run: |
+          pip install build
+          python -m build
+
+      - name: Verify wheel ships the default rule set
+        run: |
+          pip install --no-index --find-links dist dist/*.whl
+          python -c "
+          from mcp_shield.cli import default_rules_path
+          from mcp_shield.rules import load_rules_detailed
+          path = default_rules_path()
+          assert path.is_file(), f'default-rules.yaml missing from installed package: {path}'
+          result = load_rules_detailed(path)
+          assert not result.used_fallback, result.fallback_reasons
+          assert len(result.input_signatures) > 50, 'suspiciously few input signatures shipped'
+          print(f'OK: {len(result.input_signatures)} input signatures, {len(result.output_signatures)} output signatures')
+          "
