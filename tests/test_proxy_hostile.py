@@ -14,6 +14,7 @@ import pytest
 
 from mcp_shield.gates import CompiledSignature
 from mcp_shield.proxy import (
+    _ID_RECOVERY_MAX_NESTING,
     _MAX_BATCH_NESTING,
     _MAX_PENDING_TOOL_CALLS,
     EXIT_PROXY_DEGRADED,
@@ -1506,6 +1507,66 @@ def test_message_nested_exactly_at_the_drop_depth_still_answers_the_client(
     responses = _responses(client_out)
     assert len(responses) == 1, "the client got no reply at all - the hang K2 fixes"
     assert responses[0]["id"] == 42
+    assert "could not be inspected" in responses[0]["error"]["message"]
+
+
+def test_message_nested_well_past_the_drop_depth_still_answers_the_client(
+    tmp_path: Path,
+):
+    """K2 follow-up: the first K2 fix only matched the id-recovery budget to
+    the exact boundary the drop cap raises on (`_MAX_BATCH_NESTING + 1`
+    layers). A message nested even one layer deeper than that reproduced the
+    original silent-hang bug, just shifted one layer further out - the id
+    recovery walk stopped short of it.
+
+    This message is nested `_MAX_BATCH_NESTING + 4` layers deep: comfortably
+    past the old boundary-only fix's reach, but still well inside the new
+    `_ID_RECOVERY_MAX_NESTING` budget (`_MAX_BATCH_NESTING * 3`). It must
+    still get dropped by the gate (fail-closed for the deep-nesting DoS
+    concern) AND still get its id recovered so the client is answered rather
+    than left hanging."""
+    audit_path = tmp_path / "audit.jsonl"
+    nesting = _MAX_BATCH_NESTING + 4
+    assert nesting < _ID_RECOVERY_MAX_NESTING, "test must stay within the new budget"
+    inner: Any = {"jsonrpc": "2.0", "id": 99, "result": {"content": []}}
+    buried: Any = inner
+    for _ in range(nesting):
+        buried = [buried]
+    line = (json.dumps(buried) + "\n").encode("utf-8")
+
+    # Sanity check: this line is still deep enough to be dropped by the gate.
+    with pytest.raises(ValueError):
+        _gate_inbound_message(
+            line,
+            input_signatures=[INJECTION_SIGNATURE],
+            audit_log_path=audit_path,
+            pending_tool_calls={},
+            pending_lock=threading.Lock(),
+        )
+
+    # id-recovery must still find id 99 for a line this deep - this is the
+    # gap the first K2 fix left open.
+    assert _safe_peek_id(line) == 99
+
+    # And end to end: the pump must write a synthesized reply, not stay silent.
+    server_out = io.BytesIO(line)
+    client_out = io.BytesIO()
+    degraded = threading.Event()
+    _pump_server_to_client(
+        server_out=server_out,
+        client_out=client_out,
+        client_out_lock=threading.Lock(),
+        input_signatures=[INJECTION_SIGNATURE],
+        audit_log_path=audit_path,
+        pending_tool_calls={},
+        pending_lock=threading.Lock(),
+        degraded=degraded,
+    )
+
+    assert degraded.is_set()
+    responses = _responses(client_out)
+    assert len(responses) == 1, "the client got no reply at all - the hang this test targets"
+    assert responses[0]["id"] == 99
     assert "could not be inspected" in responses[0]["error"]["message"]
 
 

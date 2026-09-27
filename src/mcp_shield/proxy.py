@@ -37,6 +37,20 @@ _MAX_PENDING_TOOL_CALLS = 4096
 # payload aimed at the recursion limit - it takes the fail-closed path.
 _MAX_BATCH_NESTING = 8
 
+# How many levels of JSON-RPC batch array the *id-recovery* walk
+# (_iter_message_objects) will unwrap when looking for an id to answer for a
+# message the gate refused to relay. This is deliberately several times
+# _MAX_BATCH_NESTING rather than equal to it: a message nested one or two
+# layers past the drop cap is still a realistic (if hostile) payload, and the
+# client sending it still deserves a synthesized error reply instead of a
+# silent hang. Every message the gate drops for excessive nesting must remain
+# within this budget, with real headroom to spare - not just the same
+# boundary the drop cap uses. It is still a finite cap, not unbounded
+# recursion: past this depth the payload is aimed at the recursion/stack
+# limit itself, and the proxy accepts that such a message loses its reply
+# rather than let id-recovery become its own resource-exhaustion vector.
+_ID_RECOVERY_MAX_NESTING = _MAX_BATCH_NESTING * 3
+
 
 def _write_line(stream: BinaryIO, lock: threading.Lock, data: bytes) -> None:
     with lock:
@@ -531,19 +545,23 @@ def _pump_client_to_server(
 def _iter_message_objects(value: Any, depth: int = 0):
     """Yields every JSON-RPC-object-shaped value in `value`, unwrapping batch
     arrays (including nested ones). Best-effort: used only for id recovery, so
-    it stops at the nesting cap rather than raising.
+    it stops at its own nesting cap rather than raising.
 
-    The `<=` (rather than `<`) matters: `_gate_inbound_batch` starts its own
-    depth counter at 1 (not 0) and raises once it is already AT the cap and
-    finds another list to descend into - so a line nested exactly deep enough
-    to be dropped by that cap is one list-layer deeper than what a `depth <
-    _MAX_BATCH_NESTING` guard here would still unwrap. Using `<=` gives this
-    helper the same effective budget, so the one line guaranteed to need a
-    synthesized reply (a dropped line) is not also the one case where no id
-    can be recovered for it (K2)."""
+    This walk uses `_ID_RECOVERY_MAX_NESTING`, not `_MAX_BATCH_NESTING`: the
+    two gates (`_gate_inbound_batch` / `_gate_outbound_value`) drop a message
+    as soon as it is nested one layer past `_MAX_BATCH_NESTING`, and a budget
+    here that merely matched that cap could recover an id only for a message
+    nested *exactly* at that boundary - anything one layer deeper reproduced
+    the original silent-hang bug this helper exists to prevent (K2). Using a
+    materially larger budget (several times the drop cap) means realistic
+    attacker payloads nested a few layers past the boundary still get an id
+    recovered and answered, not just the single boundary case. It remains a
+    finite cap rather than unbounded recursion, so a payload aimed at the
+    recursion/stack limit itself still just loses its reply instead of
+    crashing or hanging the pump."""
     if isinstance(value, dict):
         yield value
-    elif isinstance(value, list) and depth <= _MAX_BATCH_NESTING:
+    elif isinstance(value, list) and depth <= _ID_RECOVERY_MAX_NESTING:
         for element in value:
             yield from _iter_message_objects(element, depth + 1)
 
