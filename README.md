@@ -3,6 +3,8 @@
 [![CI](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml/badge.svg)](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Add to Cursor](https://img.shields.io/badge/Cursor-Add_demo_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-demo&config=eyJjb21tYW5kIjoicHl0aG9uIiwiYXJncyI6WyItbSIsImFyYW4uY2xpIiwiLS0iLCJweXRob24iLCJ0ZXN0cy9maXh0dXJlcy9mYWtlX3NlcnZlci5weSJdfQ==)
+[![Claude Code: .mcp.json included](https://img.shields.io/badge/Claude_Code-.mcp.json_included-5A32FB)](.mcp.json)
 
 A transparent security proxy for [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP) stdio servers. Wraps any existing MCP server — no server-specific
@@ -71,6 +73,36 @@ and tool results as they pass through — nothing else in your IDE config
 changes, and the downstream server needs no modification.
 
 Every gated message (allowed or blocked) is logged to `~/.aran/audit.jsonl`.
+
+### One-click / auto-config
+
+Both are honest about what they actually do — one installs with a click,
+the other auto-detects with a one-time approval prompt:
+
+- **Cursor:** the *"Add to Cursor"* badge above installs a demo server —
+  Aran wrapping this repo's own test fixture
+  (`tests/fixtures/fake_server.py`, no Node.js/network required) — so you
+  can click it, open this cloned repo in Cursor, and immediately try
+  Step 3 of [TESTING.md](TESTING.md) with zero manual config. To wrap a
+  *real* server instead, generate your own deep link the same way:
+  base64-encode `{"command":"python","args":["-m","aran.cli","--",<your
+  command>,<your args...>]}` and use it in
+  `cursor://anysphere.cursor-deeplink/mcp/install?name=<name>&config=<that base64>`.
+- **Claude Code:** this repo ships a working [`.mcp.json`](.mcp.json) at
+  its root, wrapping the same test fixture. Claude Code auto-detects
+  project-level `.mcp.json` files — clone this repo, open it in Claude
+  Code, and you'll get a one-time approval prompt for the `aran-demo`
+  server. There's no click-to-install deep link for Claude Code (unlike
+  Cursor, it doesn't have one), but `.mcp.json` is the equivalent
+  "ships with the repo, auto-detected" mechanism. To wrap a real server in
+  your own project, copy `.mcp.json`'s shape and swap in your command —
+  or run `claude mcp add <name> --scope project -- python -m aran.cli --
+  <your command> <your args...>`, which writes the same file for you.
+
+Both of the above wrap the bundled test fixture specifically so the badge
+and the `.mcp.json` in this repo work immediately for anyone who clones it
+— no MCP server install, no path to edit. Swapping in your own server
+after that is the one-line change shown in both bullets above.
 
 ## How it works
 

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "aran-demo": {
+      "command": "python",
+      "args": [
+        "-m", "aran.cli",
+        "--",
+        "python", "tests/fixtures/fake_server.py"
+      ]
+    }
+  }
+}
