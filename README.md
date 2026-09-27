@@ -124,7 +124,10 @@ pytest -v
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for project layout and testing
-philosophy.
+philosophy, and [TESTING.md](TESTING.md) for a step-by-step manual
+verification procedure — including seeing the output/input gates block a
+destructive command and redact an injection payload live, not just watching
+`pytest` pass.
 
 ## Status
 
