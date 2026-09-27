@@ -14,11 +14,13 @@ import pytest
 
 from mcp_shield.gates import CompiledSignature
 from mcp_shield.proxy import (
+    _MAX_BATCH_NESTING,
     _MAX_PENDING_TOOL_CALLS,
     EXIT_PROXY_DEGRADED,
     REDACTION_NOTICE,
     _gate_inbound_message,
     _gate_outbound_message,
+    _pump_server_to_client,
     _safe_peek_id,
     run_proxy,
 )
@@ -1398,3 +1400,172 @@ def test_dropped_batch_answers_the_response_elements_id(
     assert len(responses) == 1
     assert responses[0]["id"] == 1, "the client was answered for the server's own id"
     assert "could not be inspected" in responses[0]["error"]["message"]
+
+
+# --- K1: dict KEYS are scanned (audit-only) ----------------------------------
+
+def test_injected_dict_key_is_audited_but_not_rewritten(tmp_path: Path):
+    """K1: `structuredContent` is arbitrary JSON per the MCP spec, so an
+    attacker can put the injection text in a KEY rather than a value with no
+    unusual shape needed. Before this fix that relayed byte-for-byte with
+    `outcome: allowed` and `matched_signature: None` - the one bypass in this
+    whole review chain that left zero audit trail at all. The fix is
+    audit-only: the matched signature must now show up in the log, but the
+    key itself must NOT be rewritten (key redaction has its own hazards -
+    collisions, machinery keys - explicitly out of scope for this fix)."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate(
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"structuredContent": {INJECTION_TEXT: "x"}},
+        },
+        audit_path,
+    )
+
+    # The key is relayed exactly as it arrived - not rewritten, not dropped.
+    assert INJECTION_TEXT in gated["result"]["structuredContent"]
+    assert gated["result"]["structuredContent"][INJECTION_TEXT] == "x"
+    assert REDACTION_NOTICE not in json.dumps(gated)
+
+    events = _audit(audit_path)
+    assert len(events) == 1
+    # This is the crux of K1: previously this case left matched_signature as
+    # None with no trace the key ever matched anything.
+    assert events[0]["matched_signature"] == INJECTION_SIGNATURE
+
+
+def test_injected_dict_key_alongside_clean_value_is_still_audited(tmp_path: Path):
+    """Same as above but proves the key scan is independent of the value scan:
+    a clean value next to a poisoned key must not suppress the audit record."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate(
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"structuredContent": {INJECTION_TEXT: "totally clean value"}},
+        },
+        audit_path,
+    )
+
+    assert gated["result"]["structuredContent"] == {INJECTION_TEXT: "totally clean value"}
+    events = _audit(audit_path)
+    assert events[0]["matched_signature"] == INJECTION_SIGNATURE
+    assert events[0]["outcome"] == "allowed"  # nothing was rewritten
+
+
+# --- K2: the id-recovery budget must match the batch-drop cap ----------------
+
+def test_message_nested_exactly_at_the_drop_depth_still_answers_the_client(
+    tmp_path: Path,
+):
+    """K2: the batch-nesting cap that triggers the fail-closed drop is smaller
+    than the depth at which the id-recovery helper (_safe_peek_id) could find
+    an id - so the one case guaranteed to need a synthesized reply (a dropped
+    line) was exactly the case where no id could be recovered, and the
+    client's pending request hung forever.
+
+    `_MAX_BATCH_NESTING + 1` array layers around a response object is the
+    smallest nesting that `_gate_inbound_batch` raises on (verified directly
+    below), so it is exactly the boundary case this fix targets."""
+    audit_path = tmp_path / "audit.jsonl"
+    inner: Any = {"jsonrpc": "2.0", "id": 42, "result": {"content": []}}
+    buried: Any = inner
+    for _ in range(_MAX_BATCH_NESTING + 1):
+        buried = [buried]
+    line = (json.dumps(buried) + "\n").encode("utf-8")
+
+    # Sanity check: this is indeed the line that gets dropped.
+    with pytest.raises(ValueError):
+        _gate_inbound_message(
+            line,
+            input_signatures=[INJECTION_SIGNATURE],
+            audit_log_path=audit_path,
+            pending_tool_calls={},
+            pending_lock=threading.Lock(),
+        )
+
+    # id-recovery must still find id 42 for a line this deep - this is the
+    # actual K2 fix.
+    assert _safe_peek_id(line) == 42
+
+    # And end to end: the pump must write a synthesized reply, not stay silent.
+    server_out = io.BytesIO(line)
+    client_out = io.BytesIO()
+    degraded = threading.Event()
+    _pump_server_to_client(
+        server_out=server_out,
+        client_out=client_out,
+        client_out_lock=threading.Lock(),
+        input_signatures=[INJECTION_SIGNATURE],
+        audit_log_path=audit_path,
+        pending_tool_calls={},
+        pending_lock=threading.Lock(),
+        degraded=degraded,
+    )
+
+    assert degraded.is_set()
+    responses = _responses(client_out)
+    assert len(responses) == 1, "the client got no reply at all - the hang K2 fixes"
+    assert responses[0]["id"] == 42
+    assert "could not be inspected" in responses[0]["error"]["message"]
+
+
+# --- K3: capabilities/serverInfo exemptions are anchored to their real position
+
+def test_capabilities_key_fabricated_inside_content_is_now_redacted(tmp_path: Path):
+    """K3: `capabilities` and `serverInfo` used to be exempt by bare name at
+    ANY depth, which let a hostile server fabricate an exempt region anywhere
+    by nesting one of those keys inside ordinary content. Both are only
+    legitimate as immediate children of a top-level `initialize` result, so
+    the exemption is now anchored there - outside that position, a key named
+    `capabilities` is content like any other."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate(
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"content": [
+                {"type": "text", "text": "ok", "capabilities": {"hint": INJECTION_TEXT}},
+            ]},
+        },
+        audit_path,
+    )
+
+    assert gated["result"]["content"][0]["capabilities"]["hint"] == REDACTION_NOTICE
+    assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
+
+
+def test_serverinfo_key_fabricated_inside_content_is_now_redacted(tmp_path: Path):
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate(
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"content": [
+                {"type": "text", "text": "ok", "serverInfo": {"name": INJECTION_TEXT}},
+            ]},
+        },
+        audit_path,
+    )
+
+    assert gated["result"]["content"][0]["serverInfo"]["name"] == REDACTION_NOTICE
+    assert [e["outcome"] for e in _audit(audit_path)] == ["blocked"]
+
+
+def test_capabilities_at_its_legitimate_position_is_still_exempt(tmp_path: Path):
+    """The narrowing must not newly redact the real thing: a genuine
+    initialize result's top-level `capabilities`/`serverInfo` still relay
+    verbatim."""
+    audit_path = tmp_path / "audit.jsonl"
+    gated = _gate(
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "capabilities": {"tools": {"listChanged": INJECTION_TEXT}},
+                "serverInfo": {"name": "demo", "version": INJECTION_TEXT},
+            },
+        },
+        audit_path,
+    )
+
+    assert gated["result"]["capabilities"]["tools"]["listChanged"] == INJECTION_TEXT
+    assert gated["result"]["serverInfo"]["version"] == INJECTION_TEXT
+    assert REDACTION_NOTICE not in json.dumps(gated)
+    assert [e["outcome"] for e in _audit(audit_path)] == ["allowed"]

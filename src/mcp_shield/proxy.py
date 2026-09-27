@@ -177,11 +177,27 @@ _NAMED_ENTRY_PARENTS = frozenset({
     "tools", "prompts", "resources", "resourceTemplates", "arguments",
 })
 
-# Machinery subtrees: everything at or under one of these keys, at any depth, is
-# machinery. `capabilities` and `serverInfo` are negotiation (and carry nested
-# fields - `version`, per-capability flags - that are not worth enumerating one
-# by one), `_meta` is the protocol's reserved extension slot.
-_MACHINERY_SUBTREES = frozenset({"capabilities", "serverInfo", "_meta"})
+# Machinery subtree exempt by bare name at ANY depth: `_meta` is the
+# protocol's reserved extension slot, and per the round-4 review any MCP
+# object may legitimately carry one, so there is no single position to anchor
+# it to.
+_MACHINERY_SUBTREES = frozenset({"_meta"})
+
+# Machinery subtrees exempt only at their legitimate position: everything at
+# or under `result.capabilities` or `result.serverInfo` is negotiation (and
+# carries nested fields - `version`, per-capability flags - not worth
+# enumerating one by one), but both keys are only legitimate as immediate
+# children of a top-level `initialize` result. Exempting them by bare name
+# anywhere (as `_meta` still is, above) let a hostile server fabricate an
+# exempt region wherever it liked, by nesting a `capabilities` or
+# `serverInfo` key inside ordinary content (e.g.
+# `result.content[0].capabilities.hint`). Anchoring the first two path
+# segments narrows the exemption to where it is real, the same direction
+# `error.code`'s exact-path anchor already narrows that one.
+_MACHINERY_SUBTREE_ANCHORS = frozenset({
+    ("result", "capabilities"),
+    ("result", "serverInfo"),
+})
 
 # `error.code` is machinery (clients switch on it), but `code` anywhere else is
 # just a field name a server can put prose in, so this one exemption stays
@@ -211,14 +227,17 @@ def _rewrite_allowed(path: tuple[Any, ...]) -> bool:
     the denylist, therefore redacted - and `tools` sent as an object instead of
     an array still reaches `description` for its leaf.
 
-    Two exemptions are narrowed by context (never widened): `error.code`, and
-    `name` outside a named-entry parent. See the constants above."""
+    Several exemptions are narrowed by context (never widened): `error.code`,
+    `capabilities`/`serverInfo` outside a top-level `result`, and `name`
+    outside a named-entry parent. See the constants above."""
     if path in _MACHINERY_PATHS:
         return False
     keys = [p for p in path if isinstance(p, str)]
     if any(key in _CONTENT_SUBTREES for key in keys):
         return True
     if any(key in _MACHINERY_SUBTREES for key in keys):
+        return False
+    if path[:2] in _MACHINERY_SUBTREE_ANCHORS:
         return False
     if not keys:
         return True
@@ -249,7 +268,17 @@ def _scan_and_redact(
 
     `matches` collects everything that matched (for audit visibility);
     `redactions` collects only what was actually rewritten, which is what makes
-    a message "blocked". See _rewrite_allowed for the machinery denylist."""
+    a message "blocked". See _rewrite_allowed for the machinery denylist.
+
+    Dict KEYS are scanned too (matched signatures recorded into `matches`,
+    same as an exempted value leaf), but a matching key is never rewritten:
+    only VALUE leaves are ever replaced. `structuredContent` is arbitrary JSON
+    per the MCP spec, so a server can put attacker-chosen text in a key with
+    no unusual shape required - scanning it closes the one channel that
+    otherwise left zero audit trail at all, matched_signature included. Key
+    rewriting is a deliberately separate, harder problem (redacting one of two
+    keys that collide to the same placeholder, or touching a machinery key
+    like `type`/`role`) left for a future pass; this is audit-only."""
     if depth > _MAX_WALK_DEPTH:
         raise ValueError("server result nested too deeply to inspect")
     if isinstance(value, str):
@@ -262,13 +291,17 @@ def _scan_and_redact(
             return REDACTION_NOTICE
         return value
     if isinstance(value, dict):
-        return {
-            k: _scan_and_redact(
+        result = {}
+        for k, v in value.items():
+            if isinstance(k, str):
+                key_matched = check_input(k, signatures)
+                if key_matched is not None:
+                    matches.append(key_matched)
+            result[k] = _scan_and_redact(
                 v, signatures, matches, redactions,
                 path=path + (k,), depth=depth + 1,
             )
-            for k, v in value.items()
-        }
+        return result
     if isinstance(value, list):
         return [
             _scan_and_redact(
@@ -498,10 +531,19 @@ def _pump_client_to_server(
 def _iter_message_objects(value: Any, depth: int = 0):
     """Yields every JSON-RPC-object-shaped value in `value`, unwrapping batch
     arrays (including nested ones). Best-effort: used only for id recovery, so
-    it stops at the nesting cap rather than raising."""
+    it stops at the nesting cap rather than raising.
+
+    The `<=` (rather than `<`) matters: `_gate_inbound_batch` starts its own
+    depth counter at 1 (not 0) and raises once it is already AT the cap and
+    finds another list to descend into - so a line nested exactly deep enough
+    to be dropped by that cap is one list-layer deeper than what a `depth <
+    _MAX_BATCH_NESTING` guard here would still unwrap. Using `<=` gives this
+    helper the same effective budget, so the one line guaranteed to need a
+    synthesized reply (a dropped line) is not also the one case where no id
+    can be recovered for it (K2)."""
     if isinstance(value, dict):
         yield value
-    elif isinstance(value, list) and depth < _MAX_BATCH_NESTING:
+    elif isinstance(value, list) and depth <= _MAX_BATCH_NESTING:
         for element in value:
             yield from _iter_message_objects(element, depth + 1)
 
