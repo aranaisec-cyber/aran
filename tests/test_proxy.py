@@ -2,7 +2,7 @@ import io
 import json
 from pathlib import Path
 
-from mcp_shield.proxy import run_proxy
+from aran.proxy import run_proxy
 
 
 def _requests_to_bytes(messages: list[dict]) -> io.BytesIO:

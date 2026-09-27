@@ -14,7 +14,7 @@ body:
     id: version
     attributes:
       label: Aran version
-      description: Output of `pip show mcp-shield`
+      description: Output of `pip show aran`
     validations:
       required: true
 

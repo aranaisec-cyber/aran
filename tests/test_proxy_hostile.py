@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from mcp_shield.gates import CompiledSignature
-from mcp_shield.proxy import (
+from aran.gates import CompiledSignature
+from aran.proxy import (
     _ID_RECOVERY_MAX_NESTING,
     _MAX_BATCH_NESTING,
     _MAX_PENDING_TOOL_CALLS,
@@ -713,7 +713,7 @@ def test_run_proxy_compiles_signatures_once_for_the_whole_session(
     """N3: the input gate now runs over every string leaf of every response, so
     re-resolving the signature set per leaf cost seconds on a large payload.
     Compilation must happen once at startup, not inside the walk."""
-    from mcp_shield import proxy as proxy_module
+    from aran import proxy as proxy_module
 
     real = proxy_module.compile_signatures
     compiled_lists = []

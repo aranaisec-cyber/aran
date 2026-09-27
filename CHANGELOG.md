@@ -23,6 +23,6 @@ doesn't yet follow strict semantic versioning (pre-1.0).
 - Signature set generated from a public labeled dataset via
   `scripts/sync_threat_intel.py`, with a minimum-length filter to reduce
   false positives from short, generic phrases.
-- Packaged as an installable CLI (`pip install mcp-shield`), with the rule
+- Packaged as an installable CLI (`pip install aran`), with the rule
   file shipped inside the wheel so a non-editable install still has the
   full signature set.

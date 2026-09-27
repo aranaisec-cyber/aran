@@ -7,8 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
-from mcp_shield.audit import log_event
-from mcp_shield.gates import SignatureList, check_input, check_output, compile_signatures
+from aran.audit import log_event
+from aran.gates import SignatureList, check_input, check_output, compile_signatures
 
 RequestId = int | str | None
 

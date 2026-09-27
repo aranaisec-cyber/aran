@@ -2,14 +2,14 @@ import re
 
 import pytest
 
-from mcp_shield.gates import (
+from aran.gates import (
     CompiledSignature,
     check_input,
     check_output,
     compile_signatures,
     find_signature_match,
 )
-from mcp_shield.rules import DEFAULT_INPUT_SIGNATURES, DEFAULT_OUTPUT_SIGNATURES
+from aran.rules import DEFAULT_INPUT_SIGNATURES, DEFAULT_OUTPUT_SIGNATURES
 
 
 def test_find_signature_match_returns_matching_pattern():

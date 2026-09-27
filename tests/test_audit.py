@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from mcp_shield import audit
-from mcp_shield.audit import log_event
+from aran import audit
+from aran.audit import log_event
 
 
 @pytest.fixture(autouse=True)

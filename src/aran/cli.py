@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from typing import BinaryIO
 
-from mcp_shield.proxy import run_proxy
-from mcp_shield.rules import INPUT_KEY, OUTPUT_KEY, load_rules_detailed
+from aran.proxy import run_proxy
+from aran.rules import INPUT_KEY, OUTPUT_KEY, load_rules_detailed
 
 RULES_FILE_NAME = "default-rules.yaml"
 
@@ -19,7 +19,7 @@ def default_rules_path() -> Path:
     directory under `pip install -e`; for a real wheel install it points at
     site-packages' parent, the file isn't there, and the proxy silently drops
     to the handful of hardcoded built-in signatures."""
-    return Path(str(importlib.resources.files("mcp_shield").joinpath(RULES_FILE_NAME)))
+    return Path(str(importlib.resources.files("aran").joinpath(RULES_FILE_NAME)))
 
 
 DEFAULT_RULES_PATH = default_rules_path()

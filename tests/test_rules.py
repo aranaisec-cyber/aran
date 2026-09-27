@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mcp_shield.rules import (
+from aran.rules import (
     DEFAULT_INPUT_SIGNATURES,
     DEFAULT_OUTPUT_SIGNATURES,
     INPUT_KEY,

@@ -1,6 +1,6 @@
-# Aran — MCP Shield
+# Aran
 
-[![CI](https://github.com/REPLACE_ME/mcp-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/REPLACE_ME/mcp-shield/actions/workflows/ci.yml)
+[![CI](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml/badge.svg)](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
@@ -33,7 +33,7 @@ transparently.
 ## Install
 
 ```bash
-pip install mcp-shield
+pip install aran
 ```
 
 (Not yet published to PyPI? Install from source: see
@@ -95,7 +95,7 @@ Every gated message (allowed or blocked) is logged to `~/.aran/audit.jsonl`.
 
 ## Rule config
 
-Signatures live in `src/mcp_shield/default-rules.yaml`, which ships inside
+Signatures live in `src/aran/default-rules.yaml`, which ships inside
 the installed package. Refresh the prompt-injection signatures from a live
 labeled dataset with:
 
@@ -117,8 +117,8 @@ This is a security tool — please report vulnerabilities responsibly. See
 ## Development
 
 ```bash
-git clone https://github.com/REPLACE_ME/mcp-shield.git
-cd mcp-shield
+git clone https://github.com/REPLACE_ME/aran.git
+cd aran
 pip install -e ".[dev]"
 pytest -v
 ```

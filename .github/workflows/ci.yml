@@ -50,8 +50,8 @@ jobs:
         run: |
           pip install --no-index --find-links dist dist/*.whl
           python -c "
-          from mcp_shield.cli import default_rules_path
-          from mcp_shield.rules import load_rules_detailed
+          from aran.cli import default_rules_path
+          from aran.rules import load_rules_detailed
           path = default_rules_path()
           assert path.is_file(), f'default-rules.yaml missing from installed package: {path}'
           result = load_rules_detailed(path)

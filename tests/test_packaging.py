@@ -10,15 +10,15 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10
     tomllib = None
 
-import mcp_shield
-from mcp_shield import cli
-from mcp_shield.rules import DEFAULT_INPUT_SIGNATURES, load_rules_detailed
+import aran
+from aran import cli
+from aran.rules import DEFAULT_INPUT_SIGNATURES, load_rules_detailed
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_default_rules_path_is_inside_the_installed_package():
-    package_dir = Path(mcp_shield.__file__).resolve().parent
+    package_dir = Path(aran.__file__).resolve().parent
     rules_path = cli.default_rules_path().resolve()
 
     assert rules_path.parent == package_dir
@@ -51,7 +51,7 @@ def test_pyproject_declares_the_rules_file_as_package_data():
         pyproject = tomllib.load(f)
 
     package_data = pyproject["tool"]["setuptools"]["package-data"]
-    assert "default-rules.yaml" in package_data["mcp_shield"]
+    assert "default-rules.yaml" in package_data["aran"]
 
 
 def test_no_stale_repo_root_config_copy_remains():
@@ -61,4 +61,4 @@ def test_no_stale_repo_root_config_copy_remains():
 
 def test_sync_script_writes_to_the_packaged_location():
     script = (PROJECT_ROOT / "scripts" / "sync_threat_intel.py").read_text(encoding="utf-8")
-    assert "src/mcp_shield/default-rules.yaml" in script
+    assert "src/aran/default-rules.yaml" in script

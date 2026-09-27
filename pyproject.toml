@@ -4,7 +4,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcp-shield"
+name = "aran"
 version = "0.1.0"
 description = "Aran — a transparent security proxy for MCP stdio servers: blocks destructive tool calls and redacts prompt-injection payloads before they reach your agent or your machine."
 readme = "README.md"
@@ -43,13 +43,13 @@ dependencies = [
 dev = ["pytest>=8", "build>=1.0"]
 
 [project.scripts]
-aran = "mcp_shield.cli:main"
+aran = "aran.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/REPLACE_ME/mcp-shield"
-Repository = "https://github.com/REPLACE_ME/mcp-shield"
-Issues = "https://github.com/REPLACE_ME/mcp-shield/issues"
-Security = "https://github.com/REPLACE_ME/mcp-shield/security/policy"
+Homepage = "https://github.com/REPLACE_ME/aran"
+Repository = "https://github.com/REPLACE_ME/aran"
+Issues = "https://github.com/REPLACE_ME/aran/issues"
+Security = "https://github.com/REPLACE_ME/aran/security/policy"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -57,4 +57,4 @@ where = ["src"]
 # The signature file must ship inside the wheel; otherwise a non-editable
 # install falls back to the few hardcoded built-in signatures.
 [tool.setuptools.package-data]
-mcp_shield = ["default-rules.yaml"]
+aran = ["default-rules.yaml"]

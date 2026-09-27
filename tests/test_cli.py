@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from mcp_shield import cli
-from mcp_shield.rules import DEFAULT_INPUT_SIGNATURES
+from aran import cli
+from aran.rules import DEFAULT_INPUT_SIGNATURES
 
 
 def test_parse_args_splits_on_separator():

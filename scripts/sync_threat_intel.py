@@ -18,7 +18,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Lives inside the package (not a repo-root config/ dir) so that a real,
 # non-editable `pip install .` actually ships the signatures with the wheel.
 OUTPUT_RULE_PATH = os.path.normpath(
-    os.path.join(SCRIPT_DIR, "../src/mcp_shield/default-rules.yaml")
+    os.path.join(SCRIPT_DIR, "../src/aran/default-rules.yaml")
 )
 
 # --- PROMPT INJECTION SOURCE ---
