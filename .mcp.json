@@ -1,11 +1,11 @@
 {
   "mcpServers": {
-    "aran-demo": {
+    "aran-fetch": {
       "command": "python",
       "args": [
         "-m", "aran.cli",
         "--",
-        "python", "tests/fixtures/fake_server.py"
+        "uvx", "mcp-server-fetch"
       ]
     }
   }

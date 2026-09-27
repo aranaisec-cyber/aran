@@ -3,7 +3,7 @@
 [![CI](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml/badge.svg)](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
-[![Add to Cursor](https://img.shields.io/badge/Cursor-Add_demo_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-demo&config=eyJjb21tYW5kIjoicHl0aG9uIiwiYXJncyI6WyItbSIsImFyYW4uY2xpIiwiLS0iLCJweXRob24iLCJ0ZXN0cy9maXh0dXJlcy9mYWtlX3NlcnZlci5weSJdfQ==)
+[![Add to Cursor](https://img.shields.io/badge/Cursor-Add_fetch_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-fetch&config=eyJjb21tYW5kIjoicHl0aG9uIiwiYXJncyI6WyItbSIsImFyYW4uY2xpIiwiLS0iLCJ1dngiLCJtY3Atc2VydmVyLWZldGNoIl19)
 [![Claude Code: .mcp.json included](https://img.shields.io/badge/Claude_Code-.mcp.json_included-5A32FB)](.mcp.json)
 
 A transparent security proxy for [Model Context Protocol](https://modelcontextprotocol.io)
@@ -76,33 +76,47 @@ Every gated message (allowed or blocked) is logged to `~/.aran/audit.jsonl`.
 
 ### One-click / auto-config
 
-Both are honest about what they actually do — one installs with a click,
-the other auto-detects with a one-time approval prompt:
+Both badges above wrap a real, production MCP server —
+[`mcp-server-fetch`](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch),
+the official reference server for fetching web pages — not a toy demo.
+It's a deliberate choice: fetching an untrusted URL and having whatever
+text is on that page land in your agent's context is *exactly* the attack
+this project defends against, so wrapping it is the most honest possible
+demonstration of what Aran does. It needs [`uv`](https://docs.astral.sh/uv/)
+installed (`uvx` specifically) and needs no per-user path or account setup
+— it works identically for every developer who clicks it.
 
-- **Cursor:** the *"Add to Cursor"* badge above installs a demo server —
-  Aran wrapping this repo's own test fixture
-  (`tests/fixtures/fake_server.py`, no Node.js/network required) — so you
-  can click it, open this cloned repo in Cursor, and immediately try
-  Step 3 of [TESTING.md](TESTING.md) with zero manual config. To wrap a
-  *real* server instead, generate your own deep link the same way:
-  base64-encode `{"command":"python","args":["-m","aran.cli","--",<your
-  command>,<your args...>]}` and use it in
-  `cursor://anysphere.cursor-deeplink/mcp/install?name=<name>&config=<that base64>`.
+- **Cursor:** the *"Add to Cursor"* badge above installs `aran-fetch`
+  directly — one click, no manual config.
 - **Claude Code:** this repo ships a working [`.mcp.json`](.mcp.json) at
-  its root, wrapping the same test fixture. Claude Code auto-detects
+  its root wrapping the same server. Claude Code auto-detects
   project-level `.mcp.json` files — clone this repo, open it in Claude
-  Code, and you'll get a one-time approval prompt for the `aran-demo`
-  server. There's no click-to-install deep link for Claude Code (unlike
-  Cursor, it doesn't have one), but `.mcp.json` is the equivalent
-  "ships with the repo, auto-detected" mechanism. To wrap a real server in
-  your own project, copy `.mcp.json`'s shape and swap in your command —
-  or run `claude mcp add <name> --scope project -- python -m aran.cli --
-  <your command> <your args...>`, which writes the same file for you.
+  Code, and you'll get a one-time approval prompt for `aran-fetch`. There's
+  no click-to-install deep link for Claude Code (unlike Cursor, it doesn't
+  have one), but `.mcp.json` is the equivalent "ships with the repo,
+  auto-detected" mechanism.
 
-Both of the above wrap the bundled test fixture specifically so the badge
-and the `.mcp.json` in this repo work immediately for anyone who clones it
-— no MCP server install, no path to edit. Swapping in your own server
-after that is the one-line change shown in both bullets above.
+Once it's running, ask your agent to fetch a URL and watch
+`~/.aran/audit.jsonl` — every fetched page's content passes through the
+input gate exactly like the manual tests in [TESTING.md](TESTING.md), just
+against the live internet instead of a canned fixture. A page containing
+`ignore previous instructions` (or anything else in
+[`src/aran/default-rules.yaml`](src/aran/default-rules.yaml)) gets redacted
+before your agent ever sees it.
+
+To wrap a *different* server instead — your own, or another server
+entirely — the pattern is identical: swap the args in `.mcp.json`, or
+generate your own Cursor deep link by base64-encoding
+`{"command":"python","args":["-m","aran.cli","--",<your command>,<your args...>]}`
+and using it in
+`cursor://anysphere.cursor-deeplink/mcp/install?name=<name>&config=<that base64>`
+— or run `claude mcp add <name> --scope project -- python -m aran.cli --
+<your command> <your args...>`, which writes the `.mcp.json` entry for you.
+
+**Heads up:** `mcp-server-fetch`'s own documentation notes it can reach
+local/internal network addresses, which is a real consideration for any
+fetch-capable tool regardless of Aran — worth knowing if you point it at
+anything beyond public URLs.
 
 ## How it works
 
