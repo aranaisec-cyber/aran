@@ -98,7 +98,9 @@ goes away.
    for `mcp-server-fetch`. Update all of:
    - `README.md` (Install section, the JSON config example, and the
      "One-click / auto-config" section's generated-deep-link instructions)
-   - `website/index.html` (the prerequisite callout can be removed
+   - `index.html` (the marketing/install site — lives at the repo root so
+     it can be served directly by GitHub Pages with zero config; the
+     prerequisite callout can be removed
      entirely at this point; update the Cursor deep link's base64 config,
      the Claude Code `claude mcp add` command, and the "Any MCP client"
      snippet)

@@ -234,6 +234,29 @@
       <p class="mt-3 text-mutedfg">Pick your agent. Every path below wraps the same proxy — nothing about the downstream MCP server changes.</p>
     </div>
 
+    <!-- Honest prerequisite callout: the buttons/config below only configure
+         the IDE - they don't install the aran package itself. Not on PyPI
+         yet, so this is a real, unskippable manual step, not boilerplate. -->
+    <div class="mb-10 rounded-xl border border-accent/30 bg-accent/5 p-5">
+      <div class="flex gap-3">
+        <svg class="shrink-0 mt-0.5" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4m0-4h.01"/></svg>
+        <div class="text-left">
+          <p class="text-sm font-semibold text-fg">One-time setup required first</p>
+          <p class="mt-1 text-sm text-mutedfg leading-relaxed">Aran isn't on PyPI yet, so the button/config below configure your IDE correctly, but the server will show as errored until the <code class="font-mono text-fg">aran</code> package itself is installed. Run this once, in any terminal:</p>
+          <div class="mt-3 relative text-left rounded-lg border border-border bg-primary/60 p-3 font-mono text-xs overflow-x-auto">
+            <button class="copy-btn absolute top-2 right-2 flex items-center gap-1 text-mutedfg hover:text-fg text-xs px-2 py-1 rounded-md border border-border bg-card focus:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-copy-target="code-prereq" aria-label="Copy setup command to clipboard">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="copy-icon" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <span class="copy-label">Copy</span><span class="copied-label">Copied</span>
+            </button>
+            <pre id="code-prereq">git clone https://github.com/aranaisec-cyber/aran.git
+cd aran
+pip install -e .</pre>
+          </div>
+          <p class="mt-2 text-xs text-mutedfg">Once published to PyPI, this step goes away entirely — <code class="font-mono text-fg">uvx</code> will fetch Aran automatically, the same way it already does for the fetch server below.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Tabs -->
     <div role="tablist" aria-label="Install instructions by IDE" class="flex flex-wrap justify-center gap-2 mb-8">
       <button id="tab-btn-cursor" role="tab" aria-selected="true" aria-controls="tab-cursor" class="tab-btn px-4 py-2 rounded-lg text-sm font-semibold bg-accent text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg">Cursor</button>

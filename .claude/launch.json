@@ -4,7 +4,7 @@
     {
       "name": "website",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8642", "--directory", "website"],
+      "runtimeArgs": ["-m", "http.server", "8642"],
       "port": 8642
     }
   ]
