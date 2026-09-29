@@ -65,3 +65,48 @@ generated YAML.
   `gates.py`, or `rules.py`.
 - Explain *why*, not just *what*, in the PR description if the change
   affects gating/security behavior.
+
+## Publishing a release (maintainers)
+
+Aran isn't on PyPI yet — until it is, every install path (the README's
+`pip install aran`, the Cursor deep link, `.mcp.json`, `claude mcp add`)
+only *configures* the target IDE; it doesn't install the package itself.
+The one-time `git clone` + `pip install -e .` step documented alongside
+those is a real, unavoidable prerequisite today. This section is how that
+goes away.
+
+1. Bump the version in **both** places (they must match):
+   - `pyproject.toml`'s `version`
+   - `src/aran/__init__.py`'s `__version__`
+2. Build and validate:
+   ```bash
+   rm -rf dist build src/aran.egg-info
+   python -m build
+   python -m pip install --quiet twine
+   python -m twine check dist/*
+   ```
+   Both `dist/*.whl` and `dist/*.tar.gz` must report `PASSED`.
+3. Upload (requires a PyPI account and an API token — see
+   [PyPI's publishing docs](https://packaging.python.org/en/latest/tutorials/packaging-projects/#uploading-the-distribution-archives)):
+   ```bash
+   python -m twine upload dist/*
+   ```
+4. **Immediately after the first successful publish**, switch every wrapped
+   command from `python -m aran.cli --` to `uvx aran --` — this is the
+   change that makes installs genuinely zero-step, since `uvx` will fetch
+   Aran from PyPI transparently on first run, the same way it already does
+   for `mcp-server-fetch`. Update all of:
+   - `README.md` (Install section, the JSON config example, and the
+     "One-click / auto-config" section's generated-deep-link instructions)
+   - `website/index.html` (the prerequisite callout can be removed
+     entirely at this point; update the Cursor deep link's base64 config,
+     the Claude Code `claude mcp add` command, and the "Any MCP client"
+     snippet)
+   - `.mcp.json` at the repo root
+   - Re-encode the Cursor deep link's `config` parameter for the new
+     command — see the base64-encoding snippet in `README.md`'s
+     "One-click / auto-config" section for the exact method.
+5. Verify the new `uvx aran --` form actually works end-to-end (a clean
+   venv with no prior `aran` install, confirm `uvx aran -- python
+   tests/fixtures/fake_server.py` launches correctly) before considering
+   the migration done — don't just assume `uvx` resolves it correctly.

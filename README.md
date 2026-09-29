@@ -38,8 +38,19 @@ transparently.
 pip install aran
 ```
 
-(Not yet published to PyPI? Install from source: see
-[Development](#development) below.)
+**Not on PyPI yet — that command doesn't work today.** Install from source instead:
+
+```bash
+git clone https://github.com/aranaisec-cyber/aran.git
+cd aran
+pip install -e .
+```
+
+This applies to the one-click badges and `.mcp.json` below too: they configure
+your IDE correctly, but the server will show as errored until you've run the
+above at least once. Once published to PyPI, this step goes away — `uvx` will
+fetch Aran automatically, the same way it already does for the fetch server
+these examples wrap.
 
 ## Usage
 
