@@ -32,6 +32,13 @@ agent and its tools actually talk to each other.
 Aran sits inline at that layer instead, as a stdio proxy your IDE launches
 transparently.
 
+**New to Aran?** [docs/guide/](docs/guide/README.md) is a full,
+beginner-friendly walkthrough — one concept per page, from "what is MCP"
+through installing, wiring it into your IDE, and a hands-on session that
+proves every gate case works, with real command output at each step. The
+rest of this README is the fast, condensed version of the same
+information.
+
 ## Install
 
 ```bash
