@@ -41,10 +41,13 @@ def test_main_end_to_end_blocks_destructive_command(tmp_path, monkeypatch, fake_
     stdin = io.BytesIO((json.dumps(request) + "\n").encode("utf-8"))
     stdout = io.BytesIO()
 
-    cli.main(["--", *fake_server_command], stdin=stdin, stdout=stdout)
+    # env={} (not the real process environment): a developer who happens to
+    # have ARAN_MODE=audit set in their own shell must not silently flip this
+    # test's expected outcome.
+    cli.main(["--", *fake_server_command], stdin=stdin, stdout=stdout, env={})
 
     response = json.loads(stdout.getvalue().decode("utf-8").strip())
-    assert response["error"]["code"] == -32000
+    assert response["error"]["code"] == -32001
 
 
 # --- C3: PATHEXT-style command resolution and clean launch failures ---------
@@ -148,6 +151,82 @@ def test_main_warns_when_a_signature_key_is_malformed(tmp_path, monkeypatch, cap
 def test_main_is_silent_when_the_packaged_rules_file_loads(tmp_path, monkeypatch, capsys, fake_server_command):
     monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
 
-    cli.main(["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO())
+    cli.main(["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(), env={})
 
     assert "warning" not in capsys.readouterr().err.lower()
+
+
+# --- ARAN_MODE / ARAN_PROFILE: env-var parsing -------------------------------
+
+@pytest.mark.parametrize("value", ["audit", "Audit", "AUDIT", " audit "])
+def test_audit_only_enabled_accepts_case_and_whitespace_variants(value):
+    assert cli.audit_only_enabled({"ARAN_MODE": value}) is True
+
+
+@pytest.mark.parametrize("value", [None, "", "enforce", "audit-mode", "1"])
+def test_audit_only_enabled_defaults_to_false(value):
+    env = {} if value is None else {"ARAN_MODE": value}
+    assert cli.audit_only_enabled(env) is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+def test_profile_enabled_accepts_common_truthy_values(value):
+    assert cli.profile_enabled({"ARAN_PROFILE": value}) is True
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "false", "False"])
+def test_profile_enabled_defaults_to_false(value):
+    env = {} if value is None else {"ARAN_PROFILE": value}
+    assert cli.profile_enabled(env) is False
+
+
+def test_main_prints_audit_mode_notice_and_does_not_block(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "run_command", "arguments": {"command": "rm -rf /"}},
+    }
+    stdin = io.BytesIO((json.dumps(request) + "\n").encode("utf-8"))
+    stdout = io.BytesIO()
+
+    code = cli.main(
+        ["--", *fake_server_command], stdin=stdin, stdout=stdout, env={"ARAN_MODE": "audit"}
+    )
+
+    assert code == 0
+    response = json.loads(stdout.getvalue().decode("utf-8").strip())
+    assert "error" not in response, "audit mode must never actually block"
+    assert response["result"]["content"][0]["text"] == "ran run_command"
+    err = capsys.readouterr().err
+    assert "[Aran] audit mode" in err
+    assert "ARAN_MODE=audit" in err
+
+
+def test_main_does_not_print_audit_notice_by_default(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+
+    cli.main(["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(), env={})
+
+    assert "audit mode" not in capsys.readouterr().err.lower()
+
+
+def test_main_wires_aran_profile_through_to_run_proxy(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "list_files", "arguments": {}},
+    }
+    stdin = io.BytesIO((json.dumps(request) + "\n").encode("utf-8"))
+
+    cli.main(
+        ["--", *fake_server_command],
+        stdin=stdin,
+        stdout=io.BytesIO(),
+        env={"ARAN_PROFILE": "1"},
+    )
+
+    assert "[Aran Profiler]" in capsys.readouterr().err

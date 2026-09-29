@@ -149,6 +149,32 @@ anything beyond public URLs.
   [`tests/fixtures/hostile_server.py`](tests/fixtures/hostile_server.py) and
   [`tests/test_proxy_hostile.py`](tests/test_proxy_hostile.py) for the
   adversarial test suite this is verified against.
+- A blocked outbound call gets a JSON-RPC error with `code: -32001` and a
+  `data` field giving the violation, the matched signature, and a
+  best-effort `target_node` (which argument the match was found in) —
+  useful context for an agent or developer debugging why a call was
+  blocked. A bare `-32000` with no `data` means Aran itself couldn't
+  safely inspect the message (fail-closed), not a signature match.
+
+## Configuration
+
+Two environment variables, read once at startup:
+
+- **`ARAN_MODE=audit`** — dry-run mode. Gate decisions still run and are
+  still logged (as `would_block` instead of `blocked`), but nothing is
+  actually blocked or redacted — every call and response is forwarded
+  unmodified. Use this to tune signatures against real traffic before
+  turning enforcement on.
+- **`ARAN_PROFILE=1`** (or `true`/`yes`/`on`) — prints a timing line to
+  stderr for every gated message: how long the outbound check took, and
+  how many JSON leaf nodes the inbound scan visited and in how long.
+
+```bash
+ARAN_MODE=audit aran -- npx -y @modelcontextprotocol/server-filesystem /path
+```
+
+See [TESTING.md](TESTING.md#step-3f-observability--aran_modeaudit-and-aran_profile)
+for worked examples of both.
 
 ## Rule config
 

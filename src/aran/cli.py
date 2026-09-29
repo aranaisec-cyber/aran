@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.resources
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -56,6 +57,22 @@ def resolve_command(command: list[str]) -> list[str]:
     return [resolved, *command[1:]]
 
 
+def audit_only_enabled(env: dict[str, str]) -> bool:
+    """ARAN_MODE=audit disables blocking/redaction entirely - every match is
+    logged as "would_block" but always forwarded unmodified. Any other value
+    (including unset) is the normal, enforcing mode; this is opt-in, not
+    opt-out, so a typo in the env var fails safe rather than silently
+    disabling protection."""
+    return env.get("ARAN_MODE", "").strip().lower() == "audit"
+
+
+def profile_enabled(env: dict[str, str]) -> bool:
+    """ARAN_PROFILE=1 (or any other non-empty, non-"0"/"false" value) prints a
+    timing/signature-count line to stderr for every gated message."""
+    value = env.get("ARAN_PROFILE", "").strip().lower()
+    return value not in ("", "0", "false")
+
+
 def _warn_about_rules_fallback(path: Path, reasons: dict[str, str], input_count: int, output_count: int) -> None:
     unique_reasons = list(dict.fromkeys(reasons.values()))
     counts = []
@@ -75,8 +92,10 @@ def main(
     *,
     stdin: BinaryIO | None = None,
     stdout: BinaryIO | None = None,
+    env: dict[str, str] | None = None,
 ) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    env = dict(os.environ) if env is None else env
     try:
         command = parse_args(argv)
     except ValueError as e:
@@ -95,6 +114,18 @@ def main(
             len(rules.output_signatures),
         )
 
+    audit_only = audit_only_enabled(env)
+    if audit_only:
+        # Printed unconditionally, every run, specifically so a developer who
+        # left ARAN_MODE=audit set in their shell profile notices it - audit
+        # mode looks identical to normal operation except that nothing is
+        # ever actually blocked.
+        print(
+            "[Aran] audit mode (ARAN_MODE=audit): blocking and redaction are "
+            "disabled, matches are logged only",
+            file=sys.stderr,
+        )
+
     try:
         return run_proxy(
             resolve_command(command),
@@ -103,6 +134,8 @@ def main(
             audit_log_path=DEFAULT_AUDIT_LOG_PATH,
             client_in=stdin or sys.stdin.buffer,
             client_out=stdout or sys.stdout.buffer,
+            audit_only=audit_only,
+            profile=profile_enabled(env),
         )
     except OSError as e:
         # Popen failures (command not found, not executable, ...) must surface

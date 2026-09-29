@@ -120,3 +120,31 @@ def check_input(text: str, signatures: SignatureList) -> str | None:
     """Checks inbound tool-result text against the input gate signatures.
     Returns the matched signature, or None if clean."""
     return find_signature_match(text, signatures)
+
+
+def locate_output_match(tool_name: str, arguments: Any, matched_signature: str) -> str:
+    """Best-effort: which top-level argument (or the tool name) contains the
+    text that matched `matched_signature`, for error-message context only.
+
+    This is NOT part of the gating decision - check_output() already decided
+    the call is blocked before this ever runs, and this function cannot
+    change that. A wrong or unattributable answer here only makes the
+    synthesized error message less precise, never less safe; it is called
+    only on the already-blocked path, never in the hot clean-call path.
+
+    Checks tool_name first, then each top-level argument key's own collected
+    string content, against `matched_signature` specifically (not the whole
+    signature list) so the reported node is the one that actually matched.
+    Falls back to "arguments" when the match came from something not
+    attributable to a single top-level key (a nested value several levels
+    down, or arguments that were not a dict at all)."""
+    single = [matched_signature]
+    if find_signature_match(str(tool_name), single) is not None:
+        return "tool_name"
+    if isinstance(arguments, dict):
+        for key in arguments:
+            parts: list[str] = []
+            _collect_strings(arguments[key], parts)
+            if find_signature_match("\n".join(parts), single) is not None:
+                return f"arguments.{key}"
+    return "arguments"

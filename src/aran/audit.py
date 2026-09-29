@@ -36,8 +36,10 @@ def log_event(
     matched_signature: str | None,
 ) -> None:
     """Appends one JSON line to the audit log. direction is 'outbound' or
-    'inbound'; outcome is 'allowed', 'blocked' or 'error'. Thread-safe: the
-    proxy's two pump threads both call this concurrently.
+    'inbound'; outcome is 'allowed', 'blocked', 'error', or 'would_block'
+    (ARAN_MODE=audit: a signature matched but the call/content was still
+    forwarded unmodified). Thread-safe: the proxy's two pump threads both
+    call this concurrently.
 
     A logging failure is never allowed to propagate: it would kill the pump
     thread that called it and so disable the security gate itself. OSErrors

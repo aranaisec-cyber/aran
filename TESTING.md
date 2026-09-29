@@ -139,12 +139,17 @@ printf '%s\n' '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"n
 
 Expected: a synthesized error, not the server's real response —
 ```json
-{"jsonrpc": "2.0", "id": 2, "error": {"code": -32000, "message": "[Aran] blocked: outbound call matched signature '...'"}}
+{"jsonrpc": "2.0", "id": 2, "error": {"code": -32001, "message": "[Aran] blocked: outbound call matched signature '...'", "data": {"violation": "destructive command signature matched", "matched_signature": "...", "target_node": "arguments.command"}}}
 ```
 The command never reached `fake_server.py` at all — Aran intercepted and
 answered it directly. (You can prove this by comparing against 3a-style
 direct invocation: the bare server would have happily replied
-`"ran run_command"`.)
+`"ran run_command"`.) `-32001` marks a real signature match; a bare `-32000`
+(no `data`) still means "Aran could not safely inspect this message," the
+fail-closed path from before signature matching became distinguishable.
+`data.target_node` is best-effort context for *where* in the call the match
+was found (`arguments.<key>`, `tool_name`, or the `arguments` fallback) —
+it's diagnostic only and never affects the block decision.
 
 ### 3d. The same injection from 3a is now redacted
 
@@ -171,6 +176,39 @@ You should see one JSON line per gated call from steps 3b–3d, each with a
 which `matched_signature` fired. This is what you'd tune false positives
 against in production; skim it now so you know what it looks like before a
 real user files an issue referencing it.
+
+---
+
+## Step 3f: Observability — `ARAN_MODE=audit` and `ARAN_PROFILE`
+
+Two environment variables, read once by the CLI at startup (not settable by
+the downstream server itself):
+
+- **`ARAN_MODE=audit`** — dry-run. Every gate decision still runs and is
+  still logged, but a match is logged as `would_block` instead of `blocked`
+  and the call/content is forwarded *unmodified* — nothing is ever actually
+  blocked or redacted. Use it to tune signatures against real traffic before
+  turning enforcement on.
+
+  ```bash
+  printf '%s\n' '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "run_command", "arguments": {"command": "rm -rf /"}}}' \
+    | ARAN_MODE=audit python -m aran.cli -- python tests/fixtures/fake_server.py
+  ```
+
+  Expected: stderr prints `[Aran] audit mode (ARAN_MODE=audit): ...` once at
+  startup, and stdout carries the real response
+  (`{"result": {"content": [{"type": "text", "text": "ran run_command"}]}}`,
+  no `error`) even though the audit log records the match as `would_block`.
+
+- **`ARAN_PROFILE=1`** — prints one stderr line per gated message with
+  timing: how long the outbound signature check took, and how many JSON
+  leaf nodes the inbound scan visited and in how long. Useful for judging
+  whether Aran is adding meaningful latency on a large response payload.
+  Off (silent) unless set to a truthy value (`1`, `true`, `yes`, `on`).
+
+Both flags are orthogonal to each other and to the audit log — combine them
+freely (`ARAN_MODE=audit ARAN_PROFILE=1 ...`) when tuning signatures against
+real traffic.
 
 ---
 

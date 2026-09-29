@@ -374,7 +374,7 @@ def test_non_utf8_outbound_call_is_still_gated(tmp_path: Path, fake_server_comma
     responses = _responses(client_out)
     assert len(responses) == 1
     assert responses[0]["id"] == 1
-    assert responses[0]["error"]["code"] == -32000
+    assert responses[0]["error"]["code"] == -32001
     assert "blocked" in responses[0]["error"]["message"].lower()
     # the fake server's marker for a forwarded call - proving it never arrived
     assert "ran run_command" not in json.dumps(responses)
@@ -1218,12 +1218,19 @@ def test_batched_destructive_tool_call_is_blocked(tmp_path: Path):
 
     assert forward is None, "a batched destructive call was forwarded to the server"
     # The client is answered in the framing it used: a batch of one error.
-    assert _responses(client_out) == [[{
-        "jsonrpc": "2.0", "id": 1,
-        "error": {"code": -32000,
-                  "message": "[Aran] blocked: outbound call matched signature "
-                             "'rm\\\\s+-[rfRF]+'"},
-    }]]
+    responses = _responses(client_out)
+    assert len(responses) == 1 and len(responses[0]) == 1
+    error = responses[0][0]["error"]
+    assert responses[0][0]["id"] == 1
+    assert error["code"] == -32001
+    assert error["message"] == (
+        "[Aran] blocked: outbound call matched signature 'rm\\\\s+-[rfRF]+'"
+    )
+    assert error["data"] == {
+        "violation": "destructive command signature matched",
+        "matched_signature": r"rm\s+-[rfRF]+",
+        "target_node": "arguments.command",
+    }
     outbound = [e for e in _audit(audit_path) if e["direction"] == "outbound"]
     assert [e["outcome"] for e in outbound] == ["blocked"]
     assert outbound[0]["tool_name"] == "run_command"
@@ -1248,7 +1255,7 @@ def test_outbound_batch_keeps_the_clean_calls_and_drops_the_blocked_one(
 ):
     """The surgical option the finding allows, and the one that matches the
     inbound precedent: the batch framing survives, the blocked element is
-    stripped and answered with a -32000 for its own id, and the rest of the
+    stripped and answered with a -32001 for its own id, and the rest of the
     batch reaches the server."""
     audit_path = tmp_path / "audit.jsonl"
     client_out = io.BytesIO()
@@ -1279,7 +1286,7 @@ def test_outbound_batch_keeps_the_clean_calls_and_drops_the_blocked_one(
     ]
     assert len(blocked_replies) == 1
     assert blocked_replies[0]["id"] == 1
-    assert blocked_replies[0]["error"]["code"] == -32000
+    assert blocked_replies[0]["error"]["code"] == -32001
     outbound = [e for e in _audit(audit_path) if e["direction"] == "outbound"]
     assert [e["outcome"] for e in outbound] == ["blocked", "allowed"]
     assert [e["tool_name"] for e in outbound] == ["run_command", "list_files"]

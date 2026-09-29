@@ -8,6 +8,7 @@ from aran.gates import (
     check_output,
     compile_signatures,
     find_signature_match,
+    locate_output_match,
 )
 from aran.rules import DEFAULT_INPUT_SIGNATURES, DEFAULT_OUTPUT_SIGNATURES
 
@@ -153,6 +154,36 @@ def test_compiled_signatures_match_exactly_like_the_string_path(text, expected):
     signatures = ["ignore previous instructions", "AKIA[0-9A-Z]{16}"]
     assert find_signature_match(text, signatures) == expected
     assert find_signature_match(text, compile_signatures(signatures)) == expected
+
+
+# --- locate_output_match: best-effort context for the blocked-call error ----
+
+def test_locate_output_match_identifies_the_matching_argument_key():
+    assert locate_output_match(
+        "run_command", {"command": "rm -rf /", "cwd": "/tmp"}, r"rm\s+-[rfRF]+"
+    ) == "arguments.command"
+
+
+def test_locate_output_match_identifies_tool_name_itself():
+    assert locate_output_match("rm-tool", {}, "rm-tool") == "tool_name"
+
+
+def test_locate_output_match_falls_back_to_arguments_when_not_a_dict():
+    assert locate_output_match("t", ["rm -rf /"], r"rm\s+-[rfRF]+") == "arguments"
+
+
+def test_locate_output_match_finds_a_nested_argument_key():
+    assert locate_output_match(
+        "exec", {"steps": [{"cmd": "chmod 777 /etc"}]}, r"chmod\s+777"
+    ) == "arguments.steps"
+
+
+def test_locate_output_match_never_raises_on_a_pattern_matching_nothing():
+    # A tool_name/arguments pair that plainly doesn't contain the given
+    # signature: locate_output_match must not be the thing that decides
+    # whether this was a real match (check_output already did) - it just has
+    # to degrade to the "arguments" fallback rather than raise or loop forever.
+    assert locate_output_match("clean_tool", {"a": "b"}, "not-present-anywhere") == "arguments"
 
 
 def test_gates_accept_compiled_signatures():

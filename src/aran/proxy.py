@@ -4,11 +4,18 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
 from aran.audit import log_event
-from aran.gates import SignatureList, check_input, check_output, compile_signatures
+from aran.gates import (
+    SignatureList,
+    check_input,
+    check_output,
+    compile_signatures,
+    locate_output_match,
+)
 
 RequestId = int | str | None
 
@@ -17,6 +24,13 @@ RequestId = int | str | None
 # Without this, a hostile server could disable the gate and the IDE would see
 # a clean exit 0 with no indication anything went wrong.
 EXIT_PROXY_DEGRADED = 3
+
+# -32000 (generic, existing) is reserved for "the proxy could not inspect this
+# message" - a proxy-side failure. -32001 is specifically "a destructive
+# signature matched", so an IDE (or a developer reading stderr) can tell "the
+# gate worked as designed" apart from "something in Aran broke" at a glance,
+# not just by parsing the message string.
+CODE_SIGNATURE_BLOCKED = -32001
 
 REDACTION_NOTICE = "[Aran] content blocked: flagged as a probable prompt injection"
 
@@ -58,16 +72,27 @@ def _write_line(stream: BinaryIO, lock: threading.Lock, data: bytes) -> None:
         stream.flush()
 
 
-def _blocked_payload(request_id: RequestId, message: str) -> dict:
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "error": {"code": -32000, "message": message},
-    }
+def _blocked_payload(
+    request_id: RequestId,
+    message: str,
+    *,
+    code: int = -32000,
+    data: dict | None = None,
+) -> dict:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
-def _blocked_response(request_id: RequestId, message: str) -> bytes:
-    return _encode_json_line(_blocked_payload(request_id, message))
+def _blocked_response(
+    request_id: RequestId,
+    message: str,
+    *,
+    code: int = -32000,
+    data: dict | None = None,
+) -> bytes:
+    return _encode_json_line(_blocked_payload(request_id, message, code=code, data=data))
 
 
 def _warn(text: str) -> None:
@@ -269,6 +294,8 @@ def _scan_and_redact(
     *,
     path: tuple[Any, ...],
     depth: int = 0,
+    audit_only: bool = False,
+    leaf_count: list[int] | None = None,
 ) -> Any:
     """Walks every string leaf under `value`, checking each against the input
     gate and replacing every match with the redaction notice except where
@@ -296,24 +323,34 @@ def _scan_and_redact(
     if depth > _MAX_WALK_DEPTH:
         raise ValueError("server result nested too deeply to inspect")
     if isinstance(value, str):
+        if leaf_count is not None:
+            leaf_count[0] += 1
         matched = check_input(value, signatures)
         if matched is None:
             return value
         matches.append(matched)
         if _rewrite_allowed(path):
             redactions.append(matched)
+            # audit_only: record that this WOULD have been redacted (drives
+            # the "would_block" outcome below) but return the original value
+            # unchanged - ARAN_MODE=audit never rewrites content.
+            if audit_only:
+                return value
             return REDACTION_NOTICE
         return value
     if isinstance(value, dict):
         result = {}
         for k, v in value.items():
             if isinstance(k, str):
+                if leaf_count is not None:
+                    leaf_count[0] += 1
                 key_matched = check_input(k, signatures)
                 if key_matched is not None:
                     matches.append(key_matched)
             result[k] = _scan_and_redact(
                 v, signatures, matches, redactions,
                 path=path + (k,), depth=depth + 1,
+                audit_only=audit_only, leaf_count=leaf_count,
             )
         return result
     if isinstance(value, list):
@@ -321,6 +358,7 @@ def _scan_and_redact(
             _scan_and_redact(
                 item, signatures, matches, redactions,
                 path=path + (_INDEX,), depth=depth + 1,
+                audit_only=audit_only, leaf_count=leaf_count,
             )
             for item in value
         ]
@@ -346,12 +384,17 @@ def _gate_outbound_object(
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
-    blocked: list[tuple[RequestId, str]],
+    blocked: list[tuple[RequestId, str, int, dict | None]],
+    audit_only: bool = False,
 ) -> Any:
     """Gates one client->server JSON-RPC object. Returns the object to forward,
-    or _DROP when the call is blocked - in which case (id, message) is appended
-    to `blocked` so the caller can answer the client in the framing the client
-    used."""
+    or _DROP when the call is blocked - in which case (id, message, code, data)
+    is appended to `blocked` so the caller can answer the client in the framing
+    the client used.
+
+    In audit_only mode a match is logged as "would_block" but the call is
+    still forwarded and registered exactly like a clean call - nothing is
+    ever dropped while ARAN_MODE=audit."""
     if message.get("method") != "tools/call":
         return message
 
@@ -366,25 +409,43 @@ def _gate_outbound_object(
 
     matched = check_output(tool_name, arguments, output_signatures)
     if matched:
+        if not audit_only:
+            log_event(
+                audit_log_path,
+                direction="outbound",
+                tool_name=tool_name,
+                outcome="blocked",
+                matched_signature=matched,
+            )
+            target_node = locate_output_match(tool_name, arguments, matched)
+            blocked.append((
+                request_id,
+                f"[Aran] blocked: outbound call matched signature {matched!r}",
+                CODE_SIGNATURE_BLOCKED,
+                {
+                    "violation": "destructive command signature matched",
+                    "matched_signature": matched,
+                    "target_node": target_node,
+                },
+            ))
+            return _DROP
+        # audit_only: log as "would_block" and fall through to the normal
+        # allow path below - the call is still forwarded, unmodified.
         log_event(
             audit_log_path,
             direction="outbound",
             tool_name=tool_name,
-            outcome="blocked",
+            outcome="would_block",
             matched_signature=matched,
         )
-        blocked.append(
-            (request_id, f"[Aran] blocked: outbound call matched signature {matched!r}")
+    else:
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="allowed",
+            matched_signature=None,
         )
-        return _DROP
-
-    log_event(
-        audit_log_path,
-        direction="outbound",
-        tool_name=tool_name,
-        outcome="allowed",
-        matched_signature=None,
-    )
     # This write must happen before the line is forwarded, otherwise the
     # response can come back before the id is registered.
     with pending_lock:
@@ -436,16 +497,20 @@ def _gate_outbound_message(
     pending_lock: threading.Lock,
     client_out: BinaryIO,
     client_out_lock: threading.Lock,
+    audit_only: bool = False,
 ) -> bytes | None:
     """Applies the output gate to one client->server line. Returns the bytes to
     forward to the server, or None if everything in the line was blocked (in
-    which case the error response has already been written back to the client)."""
+    which case the error response has already been written back to the client).
+
+    In audit_only mode `blocked` is always empty (see _gate_outbound_object),
+    so this always returns bytes to forward, never None."""
     try:
         message = _decode_json_line(line)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return line
 
-    blocked: list[tuple[RequestId, str]] = []
+    blocked: list[tuple[RequestId, str, int, dict | None]] = []
     gated = _gate_outbound_value(
         message,
         output_signatures=output_signatures,
@@ -453,6 +518,7 @@ def _gate_outbound_message(
         pending_tool_calls=pending_tool_calls,
         pending_lock=pending_lock,
         blocked=blocked,
+        audit_only=audit_only,
     )
 
     if blocked:
@@ -460,7 +526,11 @@ def _gate_outbound_message(
         # its own id, in the framing it was sent in: one object for a plain
         # request, an array for a batch. A blocked element with no usable id is
         # a notification - there is nothing to answer.
-        payloads = [_blocked_payload(rid, text) for rid, text in blocked if rid is not None]
+        payloads = [
+            _blocked_payload(rid, text, code=code, data=data)
+            for rid, text, code, data in blocked
+            if rid is not None
+        ]
         if payloads:
             _write_line(
                 client_out,
@@ -488,6 +558,8 @@ def _pump_client_to_server(
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
     degraded: threading.Event,
+    audit_only: bool = False,
+    profile: bool = False,
 ) -> None:
     try:
         while True:
@@ -495,6 +567,7 @@ def _pump_client_to_server(
             if not line:
                 break
             try:
+                start = time.perf_counter_ns() if profile else 0
                 forward = _gate_outbound_message(
                     line,
                     output_signatures=output_signatures,
@@ -503,7 +576,14 @@ def _pump_client_to_server(
                     pending_lock=pending_lock,
                     client_out=client_out,
                     client_out_lock=client_out_lock,
+                    audit_only=audit_only,
                 )
+                if profile:
+                    elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
+                    _warn(
+                        f"[Aran Profiler] Checked outbound call against "
+                        f"{len(output_signatures)} signatures in {elapsed_ms:.2f}ms"
+                    )
             except Exception as e:  # noqa: BLE001 - see fail-closed note below
                 # FAIL-CLOSED POLICY: a message we could not inspect is never
                 # forwarded to the real server. The client still gets an error
@@ -599,8 +679,14 @@ def _gate_response_object(
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
+    audit_only: bool = False,
+    leaf_count: list[int] | None = None,
 ) -> None:
-    """Gates one response-shaped JSON-RPC object in place, and audits it."""
+    """Gates one response-shaped JSON-RPC object in place, and audits it.
+
+    In audit_only mode, `message` is left completely unmodified - see
+    _scan_and_redact - but `redactions` is still populated with what WOULD
+    have been redacted, so the audit outcome below can say "would_block"."""
     request_id = _usable_request_id(message.get("id"))
     with pending_lock:
         tool_name = pending_tool_calls.get(request_id)
@@ -620,17 +706,24 @@ def _gate_response_object(
                 matches,
                 redactions,
                 path=(key,),
+                audit_only=audit_only,
+                leaf_count=leaf_count,
             )
 
+    if redactions:
+        outcome = "would_block" if audit_only else "blocked"
+    else:
+        outcome = "allowed"
     log_event(
         audit_log_path,
         direction="inbound",
         tool_name=tool_name,
-        # "blocked" means content was actually rewritten. A match in an exempt
-        # machinery field (protocolVersion, tool name, resource uri, ... - see
-        # _rewrite_allowed) is still named in the record for
-        # false-positive tuning, but the message was relayed as it arrived.
-        outcome="blocked" if redactions else "allowed",
+        # "blocked"/"would_block" means content was (or, in audit mode, would
+        # have been) rewritten. A match in an exempt machinery field
+        # (protocolVersion, tool name, resource uri, ... - see
+        # _rewrite_allowed) is still named in the record for false-positive
+        # tuning, but the message was relayed as it arrived either way.
+        outcome=outcome,
         # Only the first match is recorded: the audit field is a single string
         # and one matched rule is what an operator needs to tune a false
         # positive. The payload itself is deliberately never logged or echoed.
@@ -669,6 +762,8 @@ def _gate_inbound_message(
     audit_log_path: Path,
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
+    audit_only: bool = False,
+    leaf_count: list[int] | None = None,
 ) -> bytes:
     """Applies the input gate to one server->client line, returning the bytes
     to hand to the client (redacted if a signature matched).
@@ -703,6 +798,8 @@ def _gate_inbound_message(
         audit_log_path=audit_log_path,
         pending_tool_calls=pending_tool_calls,
         pending_lock=pending_lock,
+        audit_only=audit_only,
+        leaf_count=leaf_count,
     )
 
     if isinstance(message, dict):
@@ -735,6 +832,8 @@ def _pump_server_to_client(
     pending_tool_calls: dict[RequestId, str],
     pending_lock: threading.Lock,
     degraded: threading.Event,
+    audit_only: bool = False,
+    profile: bool = False,
 ) -> None:
     try:
         while True:
@@ -742,13 +841,23 @@ def _pump_server_to_client(
             if not line:
                 break
             try:
+                leaf_count = [0] if profile else None
+                start = time.perf_counter_ns() if profile else 0
                 out_line = _gate_inbound_message(
                     line,
                     input_signatures=input_signatures,
                     audit_log_path=audit_log_path,
                     pending_tool_calls=pending_tool_calls,
                     pending_lock=pending_lock,
+                    audit_only=audit_only,
+                    leaf_count=leaf_count,
                 )
+                if profile:
+                    elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
+                    _warn(
+                        f"[Aran Profiler] Audited {leaf_count[0]} JSON leaf nodes "
+                        f"against {len(input_signatures)} signatures in {elapsed_ms:.2f}ms"
+                    )
             except Exception as e:  # noqa: BLE001 - see fail-closed note below
                 # FAIL-CLOSED POLICY: inbound content that could not be
                 # inspected is dropped rather than relayed - it would land
@@ -805,6 +914,8 @@ def run_proxy(
     audit_log_path: Path,
     client_in: BinaryIO,
     client_out: BinaryIO,
+    audit_only: bool = False,
+    profile: bool = False,
 ) -> int:
     """Spawns `command` as the real MCP server and relays JSON-RPC between
     client_in/client_out (the IDE side) and the child's stdio, applying the
@@ -815,7 +926,14 @@ def run_proxy(
     Signatures are compiled once here rather than per string leaf: the input
     gate now runs over every leaf of every response, so re-resolving ~200
     patterns through re.search() per leaf cost seconds on a large payload and
-    made the single-threaded inbound relay look like a hang (N3)."""
+    made the single-threaded inbound relay look like a hang (N3).
+
+    audit_only=True (ARAN_MODE=audit) disables blocking/redaction entirely:
+    every match is logged as "would_block" instead, and the original call or
+    content is always forwarded unmodified. profile=True (ARAN_PROFILE=1)
+    prints a timing/signature-count line to stderr for every gated message -
+    both are independent, off-by-default toggles read from the environment
+    by cli.py, not something a downstream server can turn on itself."""
     compiled_input = compile_signatures(input_signatures)
     compiled_output = compile_signatures(output_signatures)
 
@@ -846,6 +964,8 @@ def run_proxy(
                 pending_tool_calls=pending_tool_calls,
                 pending_lock=pending_lock,
                 degraded=degraded,
+                audit_only=audit_only,
+                profile=profile,
             ),
             degraded,
         ),
@@ -864,6 +984,8 @@ def run_proxy(
                 pending_tool_calls=pending_tool_calls,
                 pending_lock=pending_lock,
                 degraded=degraded,
+                audit_only=audit_only,
+                profile=profile,
             ),
             degraded,
         ),
