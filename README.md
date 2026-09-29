@@ -1,6 +1,6 @@
 # Aran
 
-[![CI](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml/badge.svg)](https://github.com/REPLACE_ME/aran/actions/workflows/ci.yml)
+[![CI](https://github.com/aranaisec-cyber/aran/actions/workflows/ci.yml/badge.svg)](https://github.com/aranaisec-cyber/aran/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Add to Cursor](https://img.shields.io/badge/Cursor-Add_fetch_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-fetch&config=eyJjb21tYW5kIjoicHl0aG9uIiwiYXJncyI6WyItbSIsImFyYW4uY2xpIiwiLS0iLCJ1dngiLCJtY3Atc2VydmVyLWZldGNoIl19)
@@ -163,7 +163,7 @@ This is a security tool — please report vulnerabilities responsibly. See
 ## Development
 
 ```bash
-git clone https://github.com/REPLACE_ME/aran.git
+git clone https://github.com/aranaisec-cyber/aran.git
 cd aran
 pip install -e ".[dev]"
 pytest -v

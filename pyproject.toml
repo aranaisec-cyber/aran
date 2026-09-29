@@ -46,10 +46,10 @@ dev = ["pytest>=8", "build>=1.0"]
 aran = "aran.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/REPLACE_ME/aran"
-Repository = "https://github.com/REPLACE_ME/aran"
-Issues = "https://github.com/REPLACE_ME/aran/issues"
-Security = "https://github.com/REPLACE_ME/aran/security/policy"
+Homepage = "https://github.com/aranaisec-cyber/aran"
+Repository = "https://github.com/aranaisec-cyber/aran"
+Issues = "https://github.com/aranaisec-cyber/aran/issues"
+Security = "https://github.com/aranaisec-cyber/aran/security/policy"
 
 [tool.setuptools.packages.find]
 where = ["src"]
