@@ -59,3 +59,21 @@ jobs:
           assert len(result.input_signatures) > 50, 'suspiciously few input signatures shipped'
           print(f'OK: {len(result.input_signatures)} input signatures, {len(result.output_signatures)} output signatures')
           "
+
+      - name: Validate distribution metadata
+        run: |
+          pip install twine
+          twine check dist/*
+
+      - name: Run the full test suite against a clean sdist extraction
+        run: |
+          # An editable install can hide packaging bugs: MANIFEST.in once
+          # omitted tests/conftest.py, tests/fixtures/, and scripts/, so the
+          # sdist built but the test suite it shipped couldn't actually run.
+          # Extracting the sdist fresh and running pytest against ONLY what
+          # it contains is the one check that catches that class of gap.
+          mkdir sdist-check
+          tar xzf dist/*.tar.gz -C sdist-check --strip-components=1
+          cd sdist-check
+          pip install ".[dev]"
+          pytest -v

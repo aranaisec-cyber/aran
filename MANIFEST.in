@@ -1,0 +1,14 @@
+# setuptools' default sdist file list picks up loose tests/test_*.py files
+# but not tests/conftest.py or the tests/fixtures/ subdirectory (it isn't a
+# Python package - no __init__.py - so it's invisible to package discovery),
+# nor anything under scripts/ (outside both src/ and tests/ entirely).
+# Without this, an sdist-only build can't actually run the full test suite:
+# every proxy/CLI integration test depends on the fake_server_command/
+# hostile_server_command fixtures conftest.py defines, and
+# test_packaging.py::test_sync_script_writes_to_the_packaged_location reads
+# scripts/sync_threat_intel.py directly. TESTING.md's own release checklist
+# says "if anything fails, do not release" - that has to hold from a fresh
+# sdist extraction, not just an editable checkout.
+include tests/conftest.py
+recursive-include tests *.py
+recursive-include scripts *.py

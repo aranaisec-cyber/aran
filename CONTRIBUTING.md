@@ -86,6 +86,21 @@ goes away.
    python -m twine check dist/*
    ```
    Both `dist/*.whl` and `dist/*.tar.gz` must report `PASSED`.
+
+   `twine check` only validates metadata, not contents — it will not
+   notice a file missing from the sdist. Confirm the sdist is actually
+   complete (this is what `MANIFEST.in` exists for) by extracting it fresh
+   and running the full suite against *only* what it contains, not your
+   working tree:
+   ```bash
+   rm -rf /tmp/aran-sdist-check && mkdir /tmp/aran-sdist-check
+   tar xzf dist/*.tar.gz -C /tmp/aran-sdist-check --strip-components=1
+   cd /tmp/aran-sdist-check && python -m venv .venv && source .venv/bin/activate
+   pip install --quiet ".[dev]" && pytest -v
+   ```
+   All tests must pass from this clean extraction, not just from your
+   editable checkout — the CI `package` job runs this same check on every
+   push, but it's worth doing locally before a release too.
 3. Upload (requires a PyPI account and an API token — see
    [PyPI's publishing docs](https://packaging.python.org/en/latest/tutorials/packaging-projects/#uploading-the-distribution-archives)):
    ```bash
