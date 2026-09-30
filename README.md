@@ -7,8 +7,10 @@
 [![Add to Cursor](https://img.shields.io/badge/Cursor-Add_fetch_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-fetch&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJhcmFuIiwiLS0iLCJ1dngiLCJtY3Atc2VydmVyLWZldGNoIl19)
 [![Claude Code: .mcp.json included](https://img.shields.io/badge/Claude_Code-.mcp.json_included-5A32FB)](https://github.com/aranaisec-cyber/aran/blob/develop/.mcp.json)
 
-A transparent security proxy for [Model Context Protocol](https://modelcontextprotocol.io)
-(MCP) stdio servers. Wraps any existing MCP server — no server-specific
+**Aran** is the lightweight, open-source developer framework for local IDE
+telemetry and local input/output guardrails, for
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) stdio
+servers. Works with any existing MCP server — no server-specific
 integration — and gates traffic in both directions before it reaches your
 agent or your machine:
 

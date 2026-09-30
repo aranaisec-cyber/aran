@@ -43,9 +43,11 @@ EXPLAIN_TOOL_NAME = "aran_explain"
 # it costs real tokens whether or not the agent ever hits any of these
 # cases - a paragraph, not a page.
 PROXY_INSTRUCTIONS = (
-    "This MCP connection is wrapped by Aran, a local security proxy "
-    "(https://github.com/aranaisec-cyber/aran). Two behaviors to recognize "
-    "as Aran working as intended, not a bug:\n"
+    "This MCP connection runs through Aran "
+    "(https://github.com/aranaisec-cyber/aran), a lightweight, open-source "
+    "developer framework for local IDE telemetry and local input/output "
+    "guardrails. Two behaviors to recognize as Aran working as intended, "
+    "not a bug:\n"
     "- A tool call answered with JSON-RPC error code -32001 (destructive "
     "command matched) or -32002 (a referenced GitHub repo failed a content "
     "scan) was intentionally blocked by Aran before it reached this server. "
@@ -62,11 +64,11 @@ PROXY_INSTRUCTIONS = (
 STATUS_TOOL_DEFINITION: dict[str, Any] = {
     "name": STATUS_TOOL_NAME,
     "description": (
-        "Ask Aran, the security proxy wrapping this MCP server, whether it "
-        "is active and what it has gated recently (calls checked, blocked, "
-        "or redacted). Answered directly by Aran - never forwarded to the "
-        "wrapped server, and reading no data beyond Aran's own local audit "
-        "log."
+        "Ask Aran, the local developer framework guarding this MCP server, "
+        "whether it is active and what it has gated recently (calls "
+        "checked, blocked, or redacted). Answered directly by Aran - never "
+        "forwarded to the wrapped server, and reading no data beyond "
+        "Aran's own local audit log."
     ),
     "inputSchema": {
         "type": "object",

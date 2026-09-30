@@ -22,10 +22,13 @@ or ask you. See
 [4. Wiring Aran into Your IDE § Your agent already knows about Aran](04-ide-integration.md#your-agent-already-knows-about-aran-before-you-ask-anything).
 
 **Does Aran send any data anywhere?**
-No, by default. The only output beyond relaying your existing MCP traffic
-is a local audit log file (`~/.aran/audit.jsonl`) on your own machine.
-Nothing is sent over the network, and there's no telemetry, account, or
-cloud component. See [7. The Audit Log](07-audit-log.md).
+No, by default. Aran's telemetry — the audit log and the
+`aran_status`/`aran_explain` tools — is local IDE telemetry in the literal
+sense: generated on your machine, read on your machine, never
+transmitted. The only output beyond relaying your existing MCP traffic is
+a local audit log file (`~/.aran/audit.jsonl`) on your own machine.
+Nothing is sent over the network, and there's no remote analytics,
+account, or cloud component. See [7. The Audit Log](07-audit-log.md).
 
 The one opt-in exception is `ARAN_SCAN_GITHUB_REPOS=1` (off by default,
 see [8. Modes & Configuration](08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned)):

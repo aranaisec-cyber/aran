@@ -2,9 +2,11 @@
 
 ## The one-sentence version
 
-Aran sits between your AI coding agent (Claude Code, Cursor, Windsurf, ...)
-and the tools it uses, and refuses to pass along the dangerous half of what
-either side says to the other.
+Aran is the lightweight, open-source developer framework for local IDE
+telemetry and local input/output guardrails: it sits between your AI
+coding agent (Claude Code, Cursor, Windsurf, ...) and the tools it uses,
+gives you a local, on-your-machine record of what happened, and refuses
+to pass along the dangerous half of what either side says to the other.
 
 The rest of this page explains what that means, one term at a time.
 
@@ -127,12 +129,15 @@ moment it's running, with zero configuration required.
 - It doesn't require you to change the MCP server you're wrapping in any
   way. Aran wraps the launch command; the server itself is untouched and
   doesn't know Aran exists.
-- It doesn't phone home. The audit log is a local file
-  (`~/.aran/audit.jsonl`) on your own machine; nothing is sent anywhere.
-  The one opt-in exception is an optional GitHub repo scan (off by
-  default — see [8. Modes & Configuration](08-modes-and-configuration.md)),
-  which *reads* a public repo's content from GitHub before a clone is
-  allowed through; it never sends anything of yours out.
+- It doesn't phone home. Aran's telemetry — the audit log, and the
+  `aran_status`/`aran_explain` tools that read it — is local IDE
+  telemetry in the literal sense: it's generated on your machine, stored
+  in a plain file on your machine (`~/.aran/audit.jsonl`), and never
+  leaves it. The one opt-in exception is an optional GitHub repo scan
+  (off by default — see
+  [8. Modes & Configuration](08-modes-and-configuration.md)), which
+  *reads* a public repo's content from GitHub before a clone is allowed
+  through; it never sends anything of yours out.
 - It doesn't claim to catch every possible attack. It's a real, meaningful
   layer of defense against the common and known cases — not a substitute
   for reviewing what tools you grant an agent access to in the first
