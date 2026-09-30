@@ -1,11 +1,11 @@
 # Aran
 
 [![CI](https://github.com/aranaisec-cyber/aran/actions/workflows/ci.yml/badge.svg)](https://github.com/aranaisec-cyber/aran/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/aranaisec-cyber/aran/blob/develop/LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://github.com/aranaisec-cyber/aran/blob/develop/pyproject.toml)
 [![PyPI](https://img.shields.io/pypi/v/aran.svg)](https://pypi.org/project/aran/)
 [![Add to Cursor](https://img.shields.io/badge/Cursor-Add_fetch_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-fetch&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJhcmFuIiwiLS0iLCJ1dngiLCJtY3Atc2VydmVyLWZldGNoIl19)
-[![Claude Code: .mcp.json included](https://img.shields.io/badge/Claude_Code-.mcp.json_included-5A32FB)](.mcp.json)
+[![Claude Code: .mcp.json included](https://img.shields.io/badge/Claude_Code-.mcp.json_included-5A32FB)](https://github.com/aranaisec-cyber/aran/blob/develop/.mcp.json)
 
 A transparent security proxy for [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP) stdio servers. Wraps any existing MCP server — no server-specific
@@ -33,7 +33,7 @@ agent and its tools actually talk to each other.
 Aran sits inline at that layer instead, as a stdio proxy your IDE launches
 transparently.
 
-**New to Aran?** [docs/guide/](docs/guide/README.md) is a full,
+**New to Aran?** [docs/guide/](https://github.com/aranaisec-cyber/aran/blob/develop/docs/guide/README.md) is a full,
 beginner-friendly walkthrough — one concept per page, from "what is MCP"
 through installing, wiring it into your IDE, and a hands-on session that
 proves every gate case works, with real command output at each step. The
@@ -112,7 +112,8 @@ installed (`uvx` specifically) and needs no per-user path or account setup
 
 - **Cursor:** the *"Add to Cursor"* badge above installs `aran-fetch`
   directly — one click, no manual config.
-- **Claude Code:** this repo ships a working [`.mcp.json`](.mcp.json) at
+- **Claude Code:** this repo ships a working
+  [`.mcp.json`](https://github.com/aranaisec-cyber/aran/blob/develop/.mcp.json) at
   its root wrapping the same server. Claude Code auto-detects
   project-level `.mcp.json` files — clone this repo, open it in Claude
   Code, and you'll get a one-time approval prompt for `aran-fetch`. There's
@@ -122,11 +123,12 @@ installed (`uvx` specifically) and needs no per-user path or account setup
 
 Once it's running, ask your agent to fetch a URL and watch
 `~/.aran/audit.jsonl` — every fetched page's content passes through the
-input gate exactly like the manual tests in [TESTING.md](TESTING.md), just
+input gate exactly like the manual tests in
+[TESTING.md](https://github.com/aranaisec-cyber/aran/blob/develop/TESTING.md), just
 against the live internet instead of a canned fixture. A page containing
 `ignore previous instructions` (or anything else in
-[`src/aran/default-rules.yaml`](src/aran/default-rules.yaml)) gets redacted
-before your agent ever sees it.
+[`src/aran/default-rules.yaml`](https://github.com/aranaisec-cyber/aran/blob/develop/src/aran/default-rules.yaml))
+gets redacted before your agent ever sees it.
 
 To wrap a *different* server instead — your own, or another server
 entirely — the pattern is identical: swap the args in `.mcp.json`, or
@@ -154,14 +156,15 @@ anything beyond public URLs.
   set of protocol-machinery fields (`protocolVersion`, `serverInfo`,
   resource `uri`s, etc.) is exempt from rewriting so a match there doesn't
   break session negotiation — see
-  [the design spec](docs/superpowers/specs/2026-09-26-mcp-protocol-proxy-design.md#32-message-flow)
+  [the design spec](https://github.com/aranaisec-cyber/aran/blob/develop/docs/superpowers/specs/2026-09-26-mcp-protocol-proxy-design.md#32-message-flow)
   for the exact field list and reasoning.
 - Aran treats the downstream server it wraps as **untrusted** — the gating
   guarantees are designed to hold even against a malformed or actively
   hostile server, not just a well-behaved one. See
-  [`tests/fixtures/hostile_server.py`](tests/fixtures/hostile_server.py) and
-  [`tests/test_proxy_hostile.py`](tests/test_proxy_hostile.py) for the
-  adversarial test suite this is verified against.
+  [`tests/fixtures/hostile_server.py`](https://github.com/aranaisec-cyber/aran/blob/develop/tests/fixtures/hostile_server.py)
+  and
+  [`tests/test_proxy_hostile.py`](https://github.com/aranaisec-cyber/aran/blob/develop/tests/test_proxy_hostile.py)
+  for the adversarial test suite this is verified against.
 - A blocked outbound call gets a JSON-RPC error with `code: -32001` and a
   `data` field giving the violation, the matched signature, and a
   best-effort `target_node` (which argument the match was found in) —
@@ -198,7 +201,7 @@ Environment variables, read once at startup:
   fetch itself fails (offline, rate-limited, repo not found, ...), the
   call is forwarded anyway — a failed scan is logged as `"error"`, not
   treated as a match; see
-  [docs/guide/08-modes-and-configuration.md](docs/guide/08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned)
+  [docs/guide/08-modes-and-configuration.md](https://github.com/aranaisec-cyber/aran/blob/develop/docs/guide/08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned)
   for the full reasoning on why this one check fails open instead of
   closed.
 
@@ -207,7 +210,7 @@ ARAN_MODE=audit aran -- npx -y @modelcontextprotocol/server-filesystem /path
 ARAN_SCAN_GITHUB_REPOS=1 aran -- npx -y @modelcontextprotocol/server-filesystem /path
 ```
 
-See [TESTING.md](TESTING.md#step-3f-observability--aran_modeaudit-and-aran_profile)
+See [TESTING.md](https://github.com/aranaisec-cyber/aran/blob/develop/TESTING.md#step-3f-observability--aran_modeaudit-and-aran_profile)
 for worked examples of `ARAN_MODE`/`ARAN_PROFILE`.
 
 ## Rule config
@@ -229,13 +232,13 @@ python scripts/sync_threat_intel.py
 **On false positives:** the shipped signature set is generated from a
 public labeled dataset and, like any pattern-based detector, can flag
 benign content. If something gets redacted/blocked that shouldn't be,
-please [open an issue](../../issues/new?template=false_positive.yml) with
+please [open an issue](https://github.com/aranaisec-cyber/aran/issues/new?template=false_positive.yml) with
 the matched signature (visible in the audit log) and the offending text.
 
 ## Security
 
 This is a security tool — please report vulnerabilities responsibly. See
-[SECURITY.md](SECURITY.md) for scope and reporting instructions.
+[SECURITY.md](https://github.com/aranaisec-cyber/aran/blob/develop/SECURITY.md) for scope and reporting instructions.
 
 ## Development
 
@@ -246,11 +249,12 @@ pip install -e ".[dev]"
 pytest -v
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for project layout and testing
-philosophy, and [TESTING.md](TESTING.md) for a step-by-step manual
-verification procedure — including seeing the output/input gates block a
-destructive command and redact an injection payload live, not just watching
-`pytest` pass.
+See [CONTRIBUTING.md](https://github.com/aranaisec-cyber/aran/blob/develop/CONTRIBUTING.md)
+for project layout and testing philosophy, and
+[TESTING.md](https://github.com/aranaisec-cyber/aran/blob/develop/TESTING.md)
+for a step-by-step manual verification procedure — including seeing the
+output/input gates block a destructive command and redact an injection
+payload live, not just watching `pytest` pass.
 
 ## Status
 
@@ -258,9 +262,9 @@ Early (v0.1, pre-1.0). The core proxy — invocation, bidirectional gating,
 YAML config, audit log — is implemented and tested, including against an
 adversarial downstream-server test suite. Not yet covered: a multi-server
 gateway, enterprise/compliance features, and a hosted control plane — see
-the [design spec](docs/superpowers/specs/2026-09-26-mcp-protocol-proxy-design.md#2-scope)
+the [design spec](https://github.com/aranaisec-cyber/aran/blob/develop/docs/superpowers/specs/2026-09-26-mcp-protocol-proxy-design.md#2-scope)
 for what's explicitly in and out of scope for this stage.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/aranaisec-cyber/aran/blob/develop/LICENSE)
