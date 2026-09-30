@@ -3,7 +3,8 @@
 [![CI](https://github.com/aranaisec-cyber/aran/actions/workflows/ci.yml/badge.svg)](https://github.com/aranaisec-cyber/aran/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
-[![Add to Cursor](https://img.shields.io/badge/Cursor-Add_fetch_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-fetch&config=eyJjb21tYW5kIjoicHl0aG9uIiwiYXJncyI6WyItbSIsImFyYW4uY2xpIiwiLS0iLCJ1dngiLCJtY3Atc2VydmVyLWZldGNoIl19)
+[![PyPI](https://img.shields.io/pypi/v/aran.svg)](https://pypi.org/project/aran/)
+[![Add to Cursor](https://img.shields.io/badge/Cursor-Add_fetch_server-000000?logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=aran-fetch&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJhcmFuIiwiLS0iLCJ1dngiLCJtY3Atc2VydmVyLWZldGNoIl19)
 [![Claude Code: .mcp.json included](https://img.shields.io/badge/Claude_Code-.mcp.json_included-5A32FB)](.mcp.json)
 
 A transparent security proxy for [Model Context Protocol](https://modelcontextprotocol.io)
@@ -41,11 +42,15 @@ information.
 
 ## Install
 
+Aran is on PyPI — no install step needed if your IDE launches it via
+[`uvx`](https://docs.astral.sh/uv/) (recommended, see below). To use the
+plain `aran` command yourself:
+
 ```bash
 pip install aran
 ```
 
-**Not on PyPI yet — that command doesn't work today.** Install from source instead:
+To work on Aran itself instead, install from source:
 
 ```bash
 git clone https://github.com/aranaisec-cyber/aran.git
@@ -53,24 +58,23 @@ cd aran
 pip install -e .
 ```
 
-This applies to the one-click badges and `.mcp.json` below too: they configure
-your IDE correctly, but the server will show as errored until you've run the
-above at least once. Once published to PyPI, this step goes away — `uvx` will
-fetch Aran automatically, the same way it already does for the fetch server
-these examples wrap.
-
 ## Usage
 
-Wrap the command you'd normally use to launch an MCP server:
+Wrap the command you'd normally use to launch an MCP server, via `uvx` so
+nothing needs installing up front:
 
 ```bash
-aran -- npx -y @modelcontextprotocol/server-filesystem /path/to/project
+uvx aran -- npx -y @modelcontextprotocol/server-filesystem /path/to/project
 ```
+
+(If you installed Aran yourself with `pip install aran` above, drop the
+`uvx ` prefix and just run `aran -- ...` directly — both forms work
+identically.)
 
 ### Wiring into an MCP-speaking IDE
 
 In your IDE's MCP server config, replace the server's `command`/`args` with
-`aran`, moving the original command after a `--` separator.
+`uvx`/`aran`, moving the original command after a `--` separator.
 
 **Claude Code / Cursor-style JSON config:**
 
@@ -78,17 +82,19 @@ In your IDE's MCP server config, replace the server's `command`/`args` with
 {
   "mcpServers": {
     "filesystem": {
-      "command": "aran",
-      "args": ["--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
+      "command": "uvx",
+      "args": ["aran", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
     }
   }
 }
 ```
 
-That's the whole integration. Aran spawns the real server as a child
-process and relays every message between it and your IDE, gating tool calls
-and tool results as they pass through — nothing else in your IDE config
-changes, and the downstream server needs no modification.
+That's the whole integration — no prior `pip install` needed, `uvx` fetches
+Aran transparently the first time your IDE launches it. Aran spawns the
+real server as a child process and relays every message between it and
+your IDE, gating tool calls and tool results as they pass through —
+nothing else in your IDE config changes, and the downstream server needs
+no modification.
 
 Every gated message (allowed or blocked) is logged to `~/.aran/audit.jsonl`.
 
@@ -125,10 +131,10 @@ before your agent ever sees it.
 To wrap a *different* server instead — your own, or another server
 entirely — the pattern is identical: swap the args in `.mcp.json`, or
 generate your own Cursor deep link by base64-encoding
-`{"command":"python","args":["-m","aran.cli","--",<your command>,<your args...>]}`
+`{"command":"uvx","args":["aran","--",<your command>,<your args...>]}`
 and using it in
 `cursor://anysphere.cursor-deeplink/mcp/install?name=<name>&config=<that base64>`
-— or run `claude mcp add <name> --scope project -- python -m aran.cli --
+— or run `claude mcp add <name> --scope project -- uvx aran --
 <your command> <your args...>`, which writes the `.mcp.json` entry for you.
 
 **Heads up:** `mcp-server-fetch`'s own documentation notes it can reach

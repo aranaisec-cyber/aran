@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "aran-fetch": {
-      "command": "python",
+      "command": "uvx",
       "args": [
-        "-m", "aran.cli",
+        "aran",
         "--",
         "uvx", "mcp-server-fetch"
       ]

@@ -68,12 +68,13 @@ generated YAML.
 
 ## Publishing a release (maintainers)
 
-Aran isn't on PyPI yet — until it is, every install path (the README's
-`pip install aran`, the Cursor deep link, `.mcp.json`, `claude mcp add`)
-only *configures* the target IDE; it doesn't install the package itself.
-The one-time `git clone` + `pip install -e .` step documented alongside
-those is a real, unavoidable prerequisite today. This section is how that
-goes away.
+Aran has been on PyPI since 0.1.0 (published 2026-09-30) — every install
+path (`pip install aran`, the Cursor deep link, `.mcp.json`,
+`claude mcp add`, the marketing site) now uses `uvx aran --`, which
+fetches Aran from PyPI transparently with zero prior setup. This is the
+steady-state process for every release after that one; the one-time
+`python -m aran.cli --` → `uvx aran --` docs migration this section used
+to describe is done and no longer needed.
 
 1. Bump the version in **both** places (they must match):
    - `pyproject.toml`'s `version`
@@ -101,29 +102,22 @@ goes away.
    All tests must pass from this clean extraction, not just from your
    editable checkout — the CI `package` job runs this same check on every
    push, but it's worth doing locally before a release too.
-3. Upload (requires a PyPI account and an API token — see
+3. Upload (requires a PyPI account with 2FA enabled and an API token
+   scoped to the `aran` project — see
    [PyPI's publishing docs](https://packaging.python.org/en/latest/tutorials/packaging-projects/#uploading-the-distribution-archives)):
    ```bash
    python -m twine upload dist/*
    ```
-4. **Immediately after the first successful publish**, switch every wrapped
-   command from `python -m aran.cli --` to `uvx aran --` — this is the
-   change that makes installs genuinely zero-step, since `uvx` will fetch
-   Aran from PyPI transparently on first run, the same way it already does
-   for `mcp-server-fetch`. Update all of:
-   - `README.md` (Install section, the JSON config example, and the
-     "One-click / auto-config" section's generated-deep-link instructions)
-   - `index.html` (the marketing/install site — lives at the repo root so
-     it can be served directly by GitHub Pages with zero config; the
-     prerequisite callout can be removed
-     entirely at this point; update the Cursor deep link's base64 config,
-     the Claude Code `claude mcp add` command, and the "Any MCP client"
-     snippet)
-   - `.mcp.json` at the repo root
-   - Re-encode the Cursor deep link's `config` parameter for the new
-     command — see the base64-encoding snippet in `README.md`'s
-     "One-click / auto-config" section for the exact method.
-5. Verify the new `uvx aran --` form actually works end-to-end (a clean
-   venv with no prior `aran` install, confirm `uvx aran -- python
-   tests/fixtures/fake_server.py` launches correctly) before considering
-   the migration done — don't just assume `uvx` resolves it correctly.
+   A `403 Forbidden` with a correctly-scoped token and 2FA enabled is
+   usually a token generated on the wrong index (test.pypi.org vs.
+   pypi.org are separate accounts/tokens) or a paste getting corrupted by
+   an interactive hidden-input prompt — pass credentials via
+   `$env:TWINE_USERNAME`/`$env:TWINE_PASSWORD` (or the Unix equivalents)
+   instead of typing them at the prompt if that happens.
+4. Confirm the new version is actually live before telling anyone about
+   it — `pip index versions aran`, or check
+   `https://pypi.org/pypi/aran/json`, or just `pip install --upgrade aran`
+   in a scratch venv and check `pip show aran`.
+5. If this release changed the signature rules, the audit log format, or
+   any `ARAN_*` environment variable, update `CHANGELOG.md`'s
+   `[Unreleased]` section into a new dated version entry.
