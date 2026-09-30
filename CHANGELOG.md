@@ -4,6 +4,17 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); this project
 doesn't yet follow strict semantic versioning (pre-1.0).
 
+## [Unreleased]
+
+- **Session-start self-description**: Aran appends a short paragraph to
+  the `initialize` response's `instructions` field (MCP's own mechanism
+  for text the client feeds to the model at connection time) explaining
+  what a `-32001`/`-32002` blocked-call error and a
+  `[Aran] content blocked: ...` result mean. Appended to, never replacing,
+  whatever instructions the real server already provides. Always on, zero
+  extra tool calls - the agent recognizes Aran's behavior correctly the
+  first time it happens instead of misreading a block as a bug.
+
 ## [0.1.1] — 2026-09-30
 
 - **`aran_status` built-in tool**: ask your agent "what's aran's status?"

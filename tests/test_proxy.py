@@ -121,8 +121,11 @@ def test_injected_content_is_redacted_before_reaching_client(tmp_path: Path, fak
 
 
 def test_non_tool_call_messages_pass_through_unmodified(tmp_path: Path, fake_server_command: list[str]):
+    """"initialize" and "tools/list" are deliberate exceptions (Aran splices
+    its own content into their responses - see test_proxy_status.py) - this
+    covers everything else, an arbitrary method neither gate treats specially."""
     client_in = _requests_to_bytes([
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}},
     ])
     client_out = io.BytesIO()
 

@@ -11,6 +11,16 @@ Ask your agent *"what's aran's status?"* — Aran answers a built-in
 summary of what it's gated recently. See
 [4. Wiring Aran into Your IDE § Confirming Aran is actually running](04-ide-integration.md#confirming-aran-is-actually-running).
 
+**Does my agent understand Aran's error codes and redaction notices on
+its own, or does it need to be taught?**
+On its own, automatically. Aran appends a short explanation to every
+session's `initialize` response — the MCP mechanism a client is supposed
+to feed to the model at connection time — so the agent already knows what
+a `-32001`/`-32002` block or a `[Aran] content blocked: ...` result means
+the first time it sees one, without an extra round trip to figure it out
+or ask you. See
+[4. Wiring Aran into Your IDE § Your agent already knows about Aran](04-ide-integration.md#your-agent-already-knows-about-aran-before-you-ask-anything).
+
 **Does Aran send any data anywhere?**
 No, by default. The only output beyond relaying your existing MCP traffic
 is a local audit log file (`~/.aran/audit.jsonl`) on your own machine.

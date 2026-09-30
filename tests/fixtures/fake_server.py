@@ -22,6 +22,19 @@ def _respond(message: dict) -> dict:
             "id": request_id,
             "result": {"content": [{"type": "text", "text": text}]},
         }
+    if message.get("method") == "initialize":
+        # A realistic initialize result carrying its own instructions -
+        # exists so proxy tests can verify Aran APPENDS PROXY_INSTRUCTIONS
+        # (status.py) rather than clobbering a real server's own text.
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "protocolVersion": "2025-03-26",
+                "serverInfo": {"name": "fake-server", "version": "1.0.0"},
+                "instructions": "Use this server for pages.",
+            },
+        }
     if message.get("method") == "tools/list":
         # A realistic, minimal tools/list result - exists so proxy tests can
         # verify Aran splices the aran_status meta-tool (status.py) into a

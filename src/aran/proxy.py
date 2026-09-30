@@ -19,7 +19,12 @@ from aran.gates import (
     locate_output_match,
 )
 from aran.repo_scan import FetchTarballFn, default_fetch_tarball, scan_repo
-from aran.status import STATUS_TOOL_DEFINITION, STATUS_TOOL_NAME, build_status_report
+from aran.status import (
+    PROXY_INSTRUCTIONS,
+    STATUS_TOOL_DEFINITION,
+    STATUS_TOOL_NAME,
+    build_status_report,
+)
 
 RequestId = int | str | None
 
@@ -516,6 +521,7 @@ def _gate_outbound_object(
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
     pending_list_requests: set[RequestId] | None = None,
     answered: list[tuple[RequestId, str]] | None = None,
+    pending_initialize_requests: set[RequestId] | None = None,
 ) -> Any:
     """Gates one client->server JSON-RPC object. Returns the object to forward,
     or _DROP when the call is blocked - in which case (id, message, code, data)
@@ -530,18 +536,21 @@ def _gate_outbound_object(
     when repo_scan_enabled is on. aran_status is unaffected by audit_only -
     it never blocks anything itself, so there is nothing for that mode to
     disable."""
-    if message.get("method") == "tools/list" and pending_list_requests is not None:
-        # Registered so the inbound side can splice aran_status into the
-        # real tools/list response when it comes back - tracked the same
-        # bounded, insertion-order-agnostic way as pending_tool_calls,
-        # because this is a discoverability nicety, not a gating decision:
-        # losing a stale entry under load costs one missed splice, never a
-        # security check.
+    if message.get("method") in ("tools/list", "initialize"):
+        # Registered so the inbound side can splice Aran's own content into
+        # the matching response when it comes back - aran_status into
+        # tools/list, PROXY_INSTRUCTIONS into initialize's `instructions`.
+        # Tracked the same bounded, insertion-order-agnostic way as
+        # pending_tool_calls, because this is a discoverability nicety, not
+        # a gating decision: losing a stale entry under load costs one
+        # missed splice, never a security check.
         request_id = _usable_request_id(message.get("id"))
-        with pending_lock:
-            pending_list_requests.add(request_id)
-            while len(pending_list_requests) > _MAX_PENDING_TOOL_CALLS:
-                pending_list_requests.pop()
+        target = pending_list_requests if message.get("method") == "tools/list" else pending_initialize_requests
+        if target is not None:
+            with pending_lock:
+                target.add(request_id)
+                while len(target) > _MAX_PENDING_TOOL_CALLS:
+                    target.pop()
         return message
 
     if message.get("method") != "tools/call":
@@ -684,6 +693,7 @@ def _gate_outbound_message(
     repo_signatures: dict[str, SignatureList] | None = None,
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
     pending_list_requests: set[RequestId] | None = None,
+    pending_initialize_requests: set[RequestId] | None = None,
 ) -> bytes | None:
     """Applies the output gate to one client->server line. Returns the bytes to
     forward to the server, or None if everything in the line was blocked (in
@@ -711,6 +721,7 @@ def _gate_outbound_message(
         fetch_tarball=fetch_tarball,
         pending_list_requests=pending_list_requests,
         answered=answered,
+        pending_initialize_requests=pending_initialize_requests,
     )
 
     if blocked:
@@ -768,6 +779,7 @@ def _pump_client_to_server(
     repo_signatures: dict[str, SignatureList] | None = None,
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
     pending_list_requests: set[RequestId] | None = None,
+    pending_initialize_requests: set[RequestId] | None = None,
 ) -> None:
     try:
         while True:
@@ -789,6 +801,7 @@ def _pump_client_to_server(
                     repo_signatures=repo_signatures,
                     fetch_tarball=fetch_tarball,
                     pending_list_requests=pending_list_requests,
+                    pending_initialize_requests=pending_initialize_requests,
                 )
                 if profile:
                     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -903,6 +916,25 @@ def _inject_status_tool_listing(message: dict) -> None:
     tools.append(dict(STATUS_TOOL_DEFINITION))
 
 
+def _inject_proxy_instructions(message: dict) -> None:
+    """Appends PROXY_INSTRUCTIONS to an initialize response's
+    result.instructions, so the agent learns what a blocked-call error or a
+    redaction notice means at session start - before it can possibly hit
+    either - instead of only if a developer happens to ask. Appends rather
+    than replaces: a real server's own instructions (if any) are content
+    the agent still needs, not something Aran gets to discard."""
+    result = message.get("result")
+    if not isinstance(result, dict):
+        return
+    existing = result.get("instructions")
+    if isinstance(existing, str) and PROXY_INSTRUCTIONS in existing:
+        return  # already present - re-spliced id or a server that echoes it back
+    if isinstance(existing, str) and existing.strip():
+        result["instructions"] = existing + "\n\n" + PROXY_INSTRUCTIONS
+    else:
+        result["instructions"] = PROXY_INSTRUCTIONS
+
+
 def _gate_response_object(
     message: dict,
     *,
@@ -913,6 +945,7 @@ def _gate_response_object(
     audit_only: bool = False,
     leaf_count: list[int] | None = None,
     pending_list_requests: set[RequestId] | None = None,
+    pending_initialize_requests: set[RequestId] | None = None,
 ) -> None:
     """Gates one response-shaped JSON-RPC object in place, and audits it.
 
@@ -923,6 +956,9 @@ def _gate_response_object(
     with pending_lock:
         tool_name = pending_tool_calls.get(request_id)
         is_list_response = pending_list_requests is not None and request_id in pending_list_requests
+        is_initialize_response = (
+            pending_initialize_requests is not None and request_id in pending_initialize_requests
+        )
 
     matches: list[str] = []
     redactions: list[str] = []
@@ -948,6 +984,8 @@ def _gate_response_object(
         # something that arrived from the (untrusted) wrapped server, so it
         # has no business going through the input gate at all.
         _inject_status_tool_listing(message)
+    if is_initialize_response:
+        _inject_proxy_instructions(message)
 
     if redactions:
         outcome = "would_block" if audit_only else "blocked"
@@ -1004,6 +1042,7 @@ def _gate_inbound_message(
     audit_only: bool = False,
     leaf_count: list[int] | None = None,
     pending_list_requests: set[RequestId] | None = None,
+    pending_initialize_requests: set[RequestId] | None = None,
 ) -> bytes:
     """Applies the input gate to one server->client line, returning the bytes
     to hand to the client (redacted if a signature matched).
@@ -1041,6 +1080,7 @@ def _gate_inbound_message(
         audit_only=audit_only,
         leaf_count=leaf_count,
         pending_list_requests=pending_list_requests,
+        pending_initialize_requests=pending_initialize_requests,
     )
 
     if isinstance(message, dict):
@@ -1076,6 +1116,7 @@ def _pump_server_to_client(
     audit_only: bool = False,
     profile: bool = False,
     pending_list_requests: set[RequestId] | None = None,
+    pending_initialize_requests: set[RequestId] | None = None,
 ) -> None:
     try:
         while True:
@@ -1094,6 +1135,7 @@ def _pump_server_to_client(
                     audit_only=audit_only,
                     leaf_count=leaf_count,
                     pending_list_requests=pending_list_requests,
+                    pending_initialize_requests=pending_initialize_requests,
                 )
                 if profile:
                     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -1196,7 +1238,12 @@ def run_proxy(
     developer can ask their agent for it directly and get a live summary
     of what this session has gated, without opening the audit log
     themselves. It's read-only, makes no network calls, and changes no
-    gating decision, so unlike the toggles above it needs no opt-in."""
+    gating decision, so unlike the toggles above it needs no opt-in. Also
+    always on: PROXY_INSTRUCTIONS is spliced into the initialize response's
+    `instructions` field, so the agent learns what a blocked-call error or
+    a redaction notice means at session start, before it can hit either -
+    the actual answer to "can the agent respond faster": zero extra round
+    trips, because the context is already there the first time it matters."""
     compiled_input = compile_signatures(input_signatures)
     compiled_output = compile_signatures(output_signatures)
     repo_signatures = {
@@ -1218,6 +1265,7 @@ def run_proxy(
     pending_lock = threading.Lock()
     pending_tool_calls: dict[RequestId, str] = {}
     pending_list_requests: set[RequestId] = set()
+    pending_initialize_requests: set[RequestId] = set()
     degraded = threading.Event()
 
     to_server = threading.Thread(
@@ -1240,6 +1288,7 @@ def run_proxy(
                 repo_signatures=repo_signatures,
                 fetch_tarball=fetch_tarball,
                 pending_list_requests=pending_list_requests,
+                pending_initialize_requests=pending_initialize_requests,
             ),
             degraded,
         ),
@@ -1261,6 +1310,7 @@ def run_proxy(
                 audit_only=audit_only,
                 profile=profile,
                 pending_list_requests=pending_list_requests,
+                pending_initialize_requests=pending_initialize_requests,
             ),
             degraded,
         ),

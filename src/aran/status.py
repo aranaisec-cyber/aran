@@ -1,6 +1,8 @@
-"""The aran_status meta-tool: lets a developer ask "is Aran actually doing
-anything?" from inside their normal agent chat, instead of having to open
-~/.aran/audit.jsonl themselves.
+"""The aran_status meta-tool, and the self-description Aran adds to a
+session's initialize handshake - two ways of answering the same question
+("what is Aran doing, and why does something look different than it
+would talking to the real server directly?") without the agent needing to
+guess or the developer needing to explain it by hand.
 
 Aran has no UI of its own - an MCP server's only visible surface in a host
 IDE is the tool calls it exposes and their results, which the IDE already
@@ -9,6 +11,15 @@ directly (see proxy.py's interception of it): never forwarded to the
 wrapped server, and its listing is spliced into tools/list responses so an
 agent can discover and call it like any other tool, not just when told the
 exact name.
+
+PROXY_INSTRUCTIONS is spliced into the initialize response's `instructions`
+field (see proxy.py's _inject_proxy_instructions) - MCP's own built-in
+mechanism for text the client feeds to the model at session start, before
+the agent ever makes a call. Read once, for free, with zero extra round
+trips - which is the actual answer to "can this be faster": the agent
+already knows what a -32001 error or a redaction notice means the first
+time it sees one, instead of having to reason about it (or ask the user)
+from scratch.
 """
 from __future__ import annotations
 
@@ -19,6 +30,29 @@ from typing import Any
 from aran.audit import read_events
 
 STATUS_TOOL_NAME = "aran_status"
+
+# Purely descriptive: it tells the agent how to interpret behavior Aran is
+# already going to exhibit regardless of this text (a blocked call gets
+# -32001 whether or not the agent was warned in advance) - it grants no new
+# authority and changes no gating decision, the same non-negotiable line
+# status.py's tool-call handling already holds. Kept short deliberately:
+# this is injected into every session's context on every connection, so
+# it costs real tokens whether or not the agent ever hits any of these
+# cases - a paragraph, not a page.
+PROXY_INSTRUCTIONS = (
+    "This MCP connection is wrapped by Aran, a local security proxy "
+    "(https://github.com/aranaisec-cyber/aran). Two behaviors to recognize "
+    "as Aran working as intended, not a bug:\n"
+    "- A tool call answered with JSON-RPC error code -32001 (destructive "
+    "command matched) or -32002 (a referenced GitHub repo failed a content "
+    "scan) was intentionally blocked by Aran before it reached this server. "
+    "Explain that to the user rather than retrying the call.\n"
+    "- Tool result text reading \"[Aran] content blocked: flagged as a "
+    "probable prompt injection\" means Aran redacted that content before it "
+    "reached you - the tool itself did not fail.\n"
+    "Call the aran_status tool at any time for a live summary of what Aran "
+    "has gated recently."
+)
 
 STATUS_TOOL_DEFINITION: dict[str, Any] = {
     "name": STATUS_TOOL_NAME,

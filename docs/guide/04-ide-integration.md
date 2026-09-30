@@ -142,6 +142,19 @@ Optionally narrow or widen the window: ask *"what's aran's status over
 the last hour?"* or *"...all time?"* — the agent passes that through as
 the tool's `hours` argument (`0` means all-time).
 
+### Your agent already knows about Aran, before you ask anything
+
+Separately from `aran_status`, Aran appends a short paragraph to every
+session's `initialize` response — MCP's own built-in mechanism for text
+the client feeds to the model automatically, at connection time, before
+any tool call happens. It explains what a `-32001`/`-32002` blocked-call
+error means and that `[Aran] content blocked: ...` in a tool result is a
+redaction, not a failure. This is what makes the agent recognize Aran's
+behavior correctly *the first time it happens*, instead of misreading a
+block as a bug and retrying, or stopping to ask you what went wrong —
+zero extra round trips, since the context was already there. You don't
+need to do anything for this — it's automatic and always on.
+
 ### The manual way: the audit log directly
 
 If you'd rather look yourself, or want to confirm something `aran_status`'s

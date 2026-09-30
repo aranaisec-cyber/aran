@@ -190,6 +190,14 @@ anything beyond public URLs.
   Always on, read-only, no network calls. Optional `hours` argument narrows
   or widens the window (`0` = all-time). See
   [4. Wiring Aran into Your IDE § Confirming Aran is actually running](https://github.com/aranaisec-cyber/aran/blob/develop/docs/guide/04-ide-integration.md#confirming-aran-is-actually-running).
+- **Self-describing session start**: Aran appends a short paragraph to the
+  `initialize` response's `instructions` field (MCP's own built-in
+  mechanism for text the client feeds to the model, before any tool call
+  happens) explaining what a `-32001`/`-32002` error and a
+  `[Aran] content blocked: ...` result mean. The agent recognizes Aran's
+  own behavior on first contact instead of treating it as a bug and
+  retrying, or needing to ask — zero extra tool calls, appended to (never
+  replacing) whatever instructions the real server already provides.
 
 ## Configuration
 
