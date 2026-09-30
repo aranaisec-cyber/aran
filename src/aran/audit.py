@@ -5,6 +5,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 _write_lock = threading.Lock()
 _warned_lock = threading.Lock()
@@ -34,6 +35,7 @@ def log_event(
     tool_name: str | None,
     outcome: str,
     matched_signature: str | None,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     """Appends one JSON line to the audit log. direction is 'outbound' or
     'inbound'; outcome is 'allowed', 'blocked', 'error', or 'would_block'
@@ -41,16 +43,23 @@ def log_event(
     forwarded unmodified). Thread-safe: the proxy's two pump threads both
     call this concurrently.
 
+    `detail` is an optional extra field, used only by the GitHub repo scan
+    (repo_scan.py) to carry the repo and matched file path - every other
+    call site omits it, so the base five-field shape of an ordinary gate
+    decision is unchanged.
+
     A logging failure is never allowed to propagate: it would kill the pump
     thread that called it and so disable the security gate itself. OSErrors
     are swallowed after a one-time warning."""
-    event = {
+    event: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "direction": direction,
         "tool_name": tool_name,
         "outcome": outcome,
         "matched_signature": matched_signature,
     }
+    if detail is not None:
+        event["detail"] = detail
     line = json.dumps(event) + "\n"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)

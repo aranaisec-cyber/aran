@@ -7,6 +7,7 @@ from aran.gates import (
     check_input,
     check_output,
     compile_signatures,
+    find_github_repo_reference,
     find_signature_match,
     locate_output_match,
 )
@@ -184,6 +185,45 @@ def test_locate_output_match_never_raises_on_a_pattern_matching_nothing():
     # whether this was a real match (check_output already did) - it just has
     # to degrade to the "arguments" fallback rather than raise or loop forever.
     assert locate_output_match("clean_tool", {"a": "b"}, "not-present-anywhere") == "arguments"
+
+
+# --- find_github_repo_reference: detection for the optional repo scan ------
+
+def test_find_github_repo_reference_matches_an_https_clone_url_in_a_shell_command():
+    ref = find_github_repo_reference(
+        "run_command", {"command": "git clone https://github.com/octocat/Hello-World.git /tmp/x"}
+    )
+    assert ref is not None
+    assert (ref.owner, ref.repo) == ("octocat", "Hello-World")
+
+
+def test_find_github_repo_reference_matches_an_ssh_remote():
+    ref = find_github_repo_reference("run_command", {"command": "git clone git@github.com:octocat/Hello-World.git"})
+    assert ref is not None
+    assert (ref.owner, ref.repo) == ("octocat", "Hello-World")
+
+
+def test_find_github_repo_reference_matches_a_bare_browse_url_with_no_git_suffix():
+    ref = find_github_repo_reference("fetch", {"url": "https://github.com/octocat/Hello-World"})
+    assert (ref.owner, ref.repo) == ("octocat", "Hello-World")
+
+
+def test_find_github_repo_reference_matches_a_url_with_a_trailing_path():
+    ref = find_github_repo_reference("fetch", {"url": "https://github.com/octocat/Hello-World/tree/main/src"})
+    assert (ref.owner, ref.repo) == ("octocat", "Hello-World")
+
+
+def test_find_github_repo_reference_returns_none_for_an_unrelated_call():
+    assert find_github_repo_reference("list_files", {"path": "/tmp"}) is None
+
+
+def test_find_github_repo_reference_ignores_a_non_github_host():
+    assert find_github_repo_reference("fetch", {"url": "https://gitlab.com/octocat/Hello-World"}) is None
+
+
+def test_find_github_repo_reference_checks_the_tool_name_too():
+    ref = find_github_repo_reference("https://github.com/octocat/Hello-World", {})
+    assert (ref.owner, ref.repo) == ("octocat", "Hello-World")
 
 
 def test_gates_accept_compiled_signatures():

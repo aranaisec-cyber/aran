@@ -734,9 +734,12 @@ def test_run_proxy_compiles_signatures_once_for_the_whole_session(
     )
 
     assert code == 0
-    # Once for the input signatures, once for the output signatures - and never
-    # again, however many messages the session relays.
-    assert len(compiled_lists) == 2
+    # Once each for input, output, secret, and supply-chain signatures - and
+    # never again, however many messages the session relays. The latter two
+    # feed the optional GitHub repo scan and are compiled unconditionally
+    # (cheap, and simpler than threading "is the scan even enabled" into
+    # compile_signatures' call sites) even when that scan is off by default.
+    assert len(compiled_lists) == 4
     assert all(isinstance(e, CompiledSignature) for lst in compiled_lists for e in lst)
     # And the compiled set is what actually gated: the injection was redacted.
     assert "content blocked" in client_out.getvalue().decode("utf-8").lower()

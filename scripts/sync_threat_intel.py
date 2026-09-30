@@ -70,6 +70,15 @@ BASELINE_COMMAND_SIGNATURES = {
     r"curl\s+.*?\b(?:pastebin|webhook|exfil)\b",
 }
 
+# secret_signatures / supply_chain_signatures feed the optional GitHub repo
+# scan (repo_scan.py), not the two gates above. Like the command list, these
+# are a small, well-known set maintained by hand rather than sourced from a
+# live feed - re-exported from aran.rules (the single source of truth for
+# the built-in defaults) so this script can't silently drift from what a
+# fresh install ships when the rules file is missing.
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "src"))
+from aran.rules import DEFAULT_SECRET_SIGNATURES, DEFAULT_SUPPLY_CHAIN_SIGNATURES  # noqa: E402
+
 
 def fetch_json(url: str) -> dict | None:
     try:
@@ -128,6 +137,8 @@ def build_intel_database():
     # Destructive-command signatures are deliberately real regex (\s+, character
     # classes, etc.) and must stay unescaped.
     unique_commands = set(BASELINE_COMMAND_SIGNATURES)
+    unique_secrets = set(DEFAULT_SECRET_SIGNATURES)
+    unique_supply_chain = set(DEFAULT_SUPPLY_CHAIN_SIGNATURES)
 
     # --- WRITE SANITIZED UNIFIED RULES CONFIGURATION ---
     os.makedirs(os.path.dirname(OUTPUT_RULE_PATH), exist_ok=True)
@@ -136,6 +147,8 @@ def build_intel_database():
         rules = {
             "input_gate_signatures": sorted(unique_injections),
             "output_gate_signatures": sorted(unique_commands),
+            "secret_signatures": sorted(unique_secrets),
+            "supply_chain_signatures": sorted(unique_supply_chain),
         }
         with open(OUTPUT_RULE_PATH, 'w', encoding='utf-8') as f:
             f.write("# 🛡️ Aran Automated Threat Intelligence Profile\n")
@@ -146,7 +159,10 @@ def build_intel_database():
             yaml.safe_dump(rules, f, allow_unicode=True, sort_keys=False)
 
         print(f"✅ [SUCCESS] Threat profile compiled successfully! Target: {OUTPUT_RULE_PATH}")
-        print(f"📈 Sync Results: {len(unique_injections)} Injections | {len(unique_commands)} Malicious Commands mapped.")
+        print(
+            f"📈 Sync Results: {len(unique_injections)} Injections | {len(unique_commands)} Malicious Commands | "
+            f"{len(unique_secrets)} Secret patterns | {len(unique_supply_chain)} Supply-chain patterns mapped."
+        )
 
     except Exception as e:
         print(f"❌ [CRITICAL ERROR] Failed to output compiled rules database: {e}")

@@ -10,12 +10,15 @@ from typing import Any, BinaryIO, Callable
 
 from aran.audit import log_event
 from aran.gates import (
+    GitHubRepoRef,
     SignatureList,
     check_input,
     check_output,
     compile_signatures,
+    find_github_repo_reference,
     locate_output_match,
 )
+from aran.repo_scan import FetchTarballFn, default_fetch_tarball, scan_repo
 
 RequestId = int | str | None
 
@@ -31,6 +34,12 @@ EXIT_PROXY_DEGRADED = 3
 # gate worked as designed" apart from "something in Aran broke" at a glance,
 # not just by parsing the message string.
 CODE_SIGNATURE_BLOCKED = -32001
+
+# A call blocked because the GitHub repo it references failed the optional
+# repo scan (ARAN_SCAN_GITHUB_REPOS=1) - distinct from -32001 because the
+# call's OWN arguments never matched anything; the problem is in the
+# repo's content, not in the call itself.
+CODE_REPO_SCAN_BLOCKED = -32002
 
 REDACTION_NOTICE = "[Aran] content blocked: flagged as a probable prompt injection"
 
@@ -377,6 +386,110 @@ class _Dropped:
 _DROP = _Dropped()
 
 
+def _gate_github_repo_reference(
+    *,
+    tool_name: str,
+    arguments: Any,
+    request_id: RequestId,
+    audit_log_path: Path,
+    repo_signatures: dict[str, SignatureList],
+    fetch_tarball: FetchTarballFn,
+    blocked: list[tuple[RequestId, str, int, dict | None]],
+    audit_only: bool,
+) -> bool:
+    """The optional GitHub repo scan (ARAN_SCAN_GITHUB_REPOS=1): if this call
+    references a public GitHub repo, fetch and scan it before the call that
+    would clone/download it is allowed through. Returns True if the call was
+    dropped (appended to `blocked`), False otherwise.
+
+    Three distinct outcomes, each logged differently:
+      - no repo referenced: nothing to do, not logged (the overwhelming
+        majority of calls; logging every one would just be audit noise for a
+        feature this call never touched).
+      - referenced but the scan itself failed (network error, timeout, repo
+        not found, corrupt archive, ...): logged as "error" and the call is
+        allowed through anyway. This is a deliberate fail-OPEN, unlike every
+        other gate failure in this file - the thing that failed is a
+        best-effort external lookup Aran does not control, not Aran's own
+        ability to inspect a message it already has in hand. Blocking every
+        clone whenever GitHub is unreachable or rate-limited would make this
+        an opt-in feature that breaks normal use the moment the network
+        hiccups, for a check that is inherently advisory (see repo_scan.py).
+      - referenced and the scan completed and found something: logged as
+        "blocked" (or "would_block" under audit_only) exactly like the
+        destructive-command check above."""
+    ref: GitHubRepoRef | None = find_github_repo_reference(tool_name, arguments)
+    if ref is None:
+        return False
+
+    result = scan_repo(ref.owner, ref.repo, signatures_by_category=repo_signatures, fetch_tarball=fetch_tarball)
+    repo_label = f"{ref.owner}/{ref.repo}"
+
+    if result.error is not None:
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="error",
+            matched_signature=None,
+            detail={"repo": repo_label, "reason": result.error},
+        )
+        _warn(f"[Aran] warning: GitHub repo scan for {repo_label} did not complete ({result.error}); forwarding without it")
+        return False
+
+    if not result.matches:
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="allowed",
+            matched_signature=None,
+            detail={"repo": repo_label, "files_scanned": result.files_scanned},
+        )
+        return False
+
+    first = result.matches[0]
+    detail = {
+        "repo": repo_label,
+        "file": first.path,
+        "category": first.category,
+        "files_scanned": result.files_scanned,
+    }
+    if audit_only:
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="would_block",
+            matched_signature=first.matched_signature,
+            detail=detail,
+        )
+        return False
+
+    log_event(
+        audit_log_path,
+        direction="outbound",
+        tool_name=tool_name,
+        outcome="blocked",
+        matched_signature=first.matched_signature,
+        detail=detail,
+    )
+    blocked.append((
+        request_id,
+        f"[Aran] blocked: outbound call references GitHub repo {repo_label}, "
+        f"which failed a content scan ({first.category}: {first.matched_signature!r} in {first.path!r})",
+        CODE_REPO_SCAN_BLOCKED,
+        {
+            "violation": "GitHub repo content scan matched",
+            "repo": repo_label,
+            "file": first.path,
+            "category": first.category,
+            "matched_signature": first.matched_signature,
+        },
+    ))
+    return True
+
+
 def _gate_outbound_object(
     message: dict,
     *,
@@ -386,6 +499,9 @@ def _gate_outbound_object(
     pending_lock: threading.Lock,
     blocked: list[tuple[RequestId, str, int, dict | None]],
     audit_only: bool = False,
+    repo_scan_enabled: bool = False,
+    repo_signatures: dict[str, SignatureList] | None = None,
+    fetch_tarball: FetchTarballFn = default_fetch_tarball,
 ) -> Any:
     """Gates one client->server JSON-RPC object. Returns the object to forward,
     or _DROP when the call is blocked - in which case (id, message, code, data)
@@ -394,7 +510,8 @@ def _gate_outbound_object(
 
     In audit_only mode a match is logged as "would_block" but the call is
     still forwarded and registered exactly like a clean call - nothing is
-    ever dropped while ARAN_MODE=audit."""
+    ever dropped while ARAN_MODE=audit. The same applies to a repo-scan match
+    when repo_scan_enabled is on."""
     if message.get("method") != "tools/call":
         return message
 
@@ -446,6 +563,21 @@ def _gate_outbound_object(
             outcome="allowed",
             matched_signature=None,
         )
+
+    if repo_scan_enabled:
+        dropped = _gate_github_repo_reference(
+            tool_name=tool_name,
+            arguments=arguments,
+            request_id=request_id,
+            audit_log_path=audit_log_path,
+            repo_signatures=repo_signatures or {},
+            fetch_tarball=fetch_tarball,
+            blocked=blocked,
+            audit_only=audit_only,
+        )
+        if dropped:
+            return _DROP
+
     # This write must happen before the line is forwarded, otherwise the
     # response can come back before the id is registered.
     with pending_lock:
@@ -498,6 +630,9 @@ def _gate_outbound_message(
     client_out: BinaryIO,
     client_out_lock: threading.Lock,
     audit_only: bool = False,
+    repo_scan_enabled: bool = False,
+    repo_signatures: dict[str, SignatureList] | None = None,
+    fetch_tarball: FetchTarballFn = default_fetch_tarball,
 ) -> bytes | None:
     """Applies the output gate to one client->server line. Returns the bytes to
     forward to the server, or None if everything in the line was blocked (in
@@ -519,6 +654,9 @@ def _gate_outbound_message(
         pending_lock=pending_lock,
         blocked=blocked,
         audit_only=audit_only,
+        repo_scan_enabled=repo_scan_enabled,
+        repo_signatures=repo_signatures,
+        fetch_tarball=fetch_tarball,
     )
 
     if blocked:
@@ -560,6 +698,9 @@ def _pump_client_to_server(
     degraded: threading.Event,
     audit_only: bool = False,
     profile: bool = False,
+    repo_scan_enabled: bool = False,
+    repo_signatures: dict[str, SignatureList] | None = None,
+    fetch_tarball: FetchTarballFn = default_fetch_tarball,
 ) -> None:
     try:
         while True:
@@ -577,6 +718,9 @@ def _pump_client_to_server(
                     client_out=client_out,
                     client_out_lock=client_out_lock,
                     audit_only=audit_only,
+                    repo_scan_enabled=repo_scan_enabled,
+                    repo_signatures=repo_signatures,
+                    fetch_tarball=fetch_tarball,
                 )
                 if profile:
                     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -916,6 +1060,10 @@ def run_proxy(
     client_out: BinaryIO,
     audit_only: bool = False,
     profile: bool = False,
+    scan_github_repos: bool = False,
+    secret_signatures: SignatureList = (),
+    supply_chain_signatures: SignatureList = (),
+    fetch_tarball: FetchTarballFn = default_fetch_tarball,
 ) -> int:
     """Spawns `command` as the real MCP server and relays JSON-RPC between
     client_in/client_out (the IDE side) and the child's stdio, applying the
@@ -933,9 +1081,25 @@ def run_proxy(
     content is always forwarded unmodified. profile=True (ARAN_PROFILE=1)
     prints a timing/signature-count line to stderr for every gated message -
     both are independent, off-by-default toggles read from the environment
-    by cli.py, not something a downstream server can turn on itself."""
+    by cli.py, not something a downstream server can turn on itself.
+
+    scan_github_repos=True (ARAN_SCAN_GITHUB_REPOS=1) additionally scans any
+    public GitHub repo referenced in an outbound tool call's arguments
+    (destructive commands, prompt injection, hardcoded secrets, and
+    supply-chain install/build hooks - see repo_scan.py) before the call
+    that would clone/download it is forwarded. Unlike every other check in
+    this file it makes real network requests, which is why it defaults off;
+    `secret_signatures`/`supply_chain_signatures` are the two rule
+    categories specific to that scan, and `fetch_tarball` is overridable
+    only for tests - callers outside this module should never need it."""
     compiled_input = compile_signatures(input_signatures)
     compiled_output = compile_signatures(output_signatures)
+    repo_signatures = {
+        "destructive_command": compiled_output,
+        "prompt_injection": compiled_input,
+        "secret": compile_signatures(secret_signatures),
+        "supply_chain": compile_signatures(supply_chain_signatures),
+    }
 
     child = subprocess.Popen(
         command,
@@ -966,6 +1130,9 @@ def run_proxy(
                 degraded=degraded,
                 audit_only=audit_only,
                 profile=profile,
+                repo_scan_enabled=scan_github_repos,
+                repo_signatures=repo_signatures,
+                fetch_tarball=fetch_tarball,
             ),
             degraded,
         ),

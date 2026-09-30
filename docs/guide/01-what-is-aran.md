@@ -129,6 +129,10 @@ moment it's running, with zero configuration required.
   doesn't know Aran exists.
 - It doesn't phone home. The audit log is a local file
   (`~/.aran/audit.jsonl`) on your own machine; nothing is sent anywhere.
+  The one opt-in exception is an optional GitHub repo scan (off by
+  default — see [8. Modes & Configuration](08-modes-and-configuration.md)),
+  which *reads* a public repo's content from GitHub before a clone is
+  allowed through; it never sends anything of yours out.
 - It doesn't claim to catch every possible attack. It's a real, meaningful
   layer of defense against the common and known cases — not a substitute
   for reviewing what tools you grant an agent access to in the first

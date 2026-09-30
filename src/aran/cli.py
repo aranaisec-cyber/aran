@@ -73,6 +73,18 @@ def profile_enabled(env: dict[str, str]) -> bool:
     return value not in ("", "0", "false")
 
 
+def scan_github_repos_enabled(env: dict[str, str]) -> bool:
+    """ARAN_SCAN_GITHUB_REPOS=1 (or any other non-empty, non-"0"/"false"
+    value) enables the optional GitHub repo scan: an outbound call
+    referencing a public GitHub repo has that repo fetched and scanned
+    before the call is forwarded (see repo_scan.py). Off by default because,
+    unlike every other check in this proxy, it makes real network requests -
+    opt-in, not opt-out, so upgrading Aran never silently starts reaching
+    the network for anyone who hasn't asked for this."""
+    value = env.get("ARAN_SCAN_GITHUB_REPOS", "").strip().lower()
+    return value not in ("", "0", "false")
+
+
 def _warn_about_rules_fallback(path: Path, reasons: dict[str, str], input_count: int, output_count: int) -> None:
     unique_reasons = list(dict.fromkeys(reasons.values()))
     counts = []
@@ -126,6 +138,19 @@ def main(
             file=sys.stderr,
         )
 
+    scan_github_repos = scan_github_repos_enabled(env)
+    if scan_github_repos:
+        # Same reasoning as the audit-mode notice above, but this one matters
+        # more: it's the only toggle in this file that makes Aran itself
+        # reach the network, so a developer should never be surprised by it.
+        print(
+            "[Aran] GitHub repo scan enabled (ARAN_SCAN_GITHUB_REPOS=1): an "
+            "outbound call referencing a public GitHub repo will have that "
+            "repo fetched and scanned before being forwarded - this makes "
+            "network requests to GitHub",
+            file=sys.stderr,
+        )
+
     try:
         return run_proxy(
             resolve_command(command),
@@ -136,6 +161,9 @@ def main(
             client_out=stdout or sys.stdout.buffer,
             audit_only=audit_only,
             profile=profile_enabled(env),
+            scan_github_repos=scan_github_repos,
+            secret_signatures=rules.secret_signatures,
+            supply_chain_signatures=rules.supply_chain_signatures,
         )
     except OSError as e:
         # Popen failures (command not found, not executable, ...) must surface

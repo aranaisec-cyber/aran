@@ -5,10 +5,18 @@ No. Aran launches the real server as an unmodified subprocess and relays
 messages to and from it. The server has no idea Aran is there.
 
 **Does Aran send any data anywhere?**
-No. The only output beyond relaying your existing MCP traffic is a local
-audit log file (`~/.aran/audit.jsonl`) on your own machine. Nothing is
-sent over the network, and there's no telemetry, account, or cloud
-component. See [7. The Audit Log](07-audit-log.md).
+No, by default. The only output beyond relaying your existing MCP traffic
+is a local audit log file (`~/.aran/audit.jsonl`) on your own machine.
+Nothing is sent over the network, and there's no telemetry, account, or
+cloud component. See [7. The Audit Log](07-audit-log.md).
+
+The one opt-in exception is `ARAN_SCAN_GITHUB_REPOS=1` (off by default,
+see [8. Modes & Configuration](08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned)):
+when enabled, Aran downloads (never uploads) a public GitHub repo's
+contents to scan them before a call that would clone it is allowed
+through. That's a read from GitHub, not data leaving your machine — but
+it is a real network request, and it's the only feature in Aran that
+makes one, which is why it's opt-in rather than the default.
 
 **Does Aran slow down my agent?**
 Both checks are regex pattern matching against a signature list, done

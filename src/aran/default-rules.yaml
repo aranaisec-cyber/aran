@@ -506,3 +506,18 @@ output_gate_signatures:
 - mv\s+.*/dev/null
 - rm\s+-[rfRF]+
 - wget\s+.*\|\s*(sh|bash)
+secret_signatures:
+- '-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
+- AIza[0-9A-Za-z\-_]{35}
+- AKIA[0-9A-Z]{16}
+- ghp_[A-Za-z0-9]{36}
+- github_pat_[A-Za-z0-9_]{22,}
+- sk-[A-Za-z0-9]{20,}
+- xox[baprs]-[A-Za-z0-9-]{10,}
+supply_chain_signatures:
+- base64\s+(-d|--decode)\s*\|\s*(sh|bash)
+- curl\s+.*\|\s*(sh|bash|python[0-9.]*)
+- eval\s*\(\s*(atob|base64)
+- iex\s*\(\s*New-Object\s+Net\.WebClient
+- powershell(\.exe)?\s+-e(nc(odedcommand)?)?\s
+- wget\s+.*\|\s*(sh|bash|python[0-9.]*)

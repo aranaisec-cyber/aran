@@ -35,8 +35,10 @@ useful the first time, or whenever "how does this actually work?" comes up.
    `~/.aran/audit.jsonl`, what each one means, and how to read it like a
    security log instead of a wall of JSON.
 8. **[Modes & Configuration](08-modes-and-configuration.md)** — dry-run
-   mode (`ARAN_MODE=audit`), the profiler (`ARAN_PROFILE=1`), and how to
-   edit or refresh the signature rules Aran gates against.
+   mode (`ARAN_MODE=audit`), the profiler (`ARAN_PROFILE=1`), the optional
+   GitHub repo scan (`ARAN_SCAN_GITHUB_REPOS=1`) that checks a repo before
+   it's cloned, and how to edit or refresh the signature rules Aran gates
+   against.
 9. **[Hands-On Walkthrough](09-hands-on-walkthrough.md)** — an extended,
    copy-pasteable session that fires every case in both gates (clean,
    blocked, evasion attempt, dry-run, protocol-field exemption, a hostile

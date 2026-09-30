@@ -3,8 +3,12 @@ from pathlib import Path
 from aran.rules import (
     DEFAULT_INPUT_SIGNATURES,
     DEFAULT_OUTPUT_SIGNATURES,
+    DEFAULT_SECRET_SIGNATURES,
+    DEFAULT_SUPPLY_CHAIN_SIGNATURES,
     INPUT_KEY,
     OUTPUT_KEY,
+    SECRET_KEY,
+    SUPPLY_CHAIN_KEY,
     load_rules,
     load_rules_detailed,
 )
@@ -152,3 +156,68 @@ def test_load_rules_detailed_reports_unparseable_file(tmp_path: Path):
     result = load_rules_detailed(rules_file)
 
     assert "YAML" in result.fallback_reasons[INPUT_KEY]
+
+
+# --- secret_signatures / supply_chain_signatures: optional, newer keys ------
+# Added for the GitHub repo scan feature. A rules file written before these
+# existed must keep loading cleanly (built-in defaults, no warning) - only a
+# file that HAS one of these keys with a malformed value should warn.
+
+def test_load_rules_detailed_reads_secret_and_supply_chain_signatures(tmp_path: Path):
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text(
+        "input_gate_signatures:\n  - one\n"
+        "output_gate_signatures:\n  - two\n"
+        "secret_signatures:\n  - AKIA[0-9A-Z]{16}\n"
+        "supply_chain_signatures:\n  - curl\\s+.*\\|\\s*bash\n",
+        encoding="utf-8",
+    )
+
+    result = load_rules_detailed(rules_file)
+
+    assert result.secret_signatures == ["AKIA[0-9A-Z]{16}"]
+    assert result.supply_chain_signatures == [r"curl\s+.*\|\s*bash"]
+    assert not result.used_fallback
+
+
+def test_load_rules_detailed_an_old_file_missing_the_new_keys_is_not_a_fallback(tmp_path: Path):
+    """A rules file with only the original two keys (every file that existed
+    before this feature was added) must load exactly as it always did - no
+    warning just because it predates secret_signatures/supply_chain_signatures."""
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text(
+        "input_gate_signatures:\n  - one\noutput_gate_signatures:\n  - two\n",
+        encoding="utf-8",
+    )
+
+    result = load_rules_detailed(rules_file)
+
+    assert result.secret_signatures == list(DEFAULT_SECRET_SIGNATURES)
+    assert result.supply_chain_signatures == list(DEFAULT_SUPPLY_CHAIN_SIGNATURES)
+    assert not result.used_fallback
+    assert SECRET_KEY not in result.fallback_reasons
+    assert SUPPLY_CHAIN_KEY not in result.fallback_reasons
+
+
+def test_load_rules_detailed_malformed_secret_signatures_falls_back_and_warns(tmp_path: Path):
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text(
+        "input_gate_signatures:\n  - one\noutput_gate_signatures:\n  - two\n"
+        "secret_signatures: \"not-a-list\"\n",
+        encoding="utf-8",
+    )
+
+    result = load_rules_detailed(rules_file)
+
+    assert result.secret_signatures == list(DEFAULT_SECRET_SIGNATURES)
+    assert result.used_fallback
+    assert SECRET_KEY in result.fallback_reasons
+
+
+def test_load_rules_detailed_missing_file_falls_back_on_all_four_keys(tmp_path: Path):
+    result = load_rules_detailed(tmp_path / "nope.yaml")
+
+    assert result.secret_signatures == list(DEFAULT_SECRET_SIGNATURES)
+    assert result.supply_chain_signatures == list(DEFAULT_SUPPLY_CHAIN_SIGNATURES)
+    assert SECRET_KEY in result.fallback_reasons
+    assert SUPPLY_CHAIN_KEY in result.fallback_reasons

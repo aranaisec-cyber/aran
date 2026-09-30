@@ -215,6 +215,78 @@ stderr:
 depending on your machine and rules file — the shape of the output is
 what matters.)
 
+## Step 9b (optional) — The GitHub repo scan, live against the real network
+
+Everything so far has been fully offline. This step needs internet access
+and is opt-in (`ARAN_SCAN_GITHUB_REPOS=1`) precisely because it's the one
+feature in Aran that makes a real outbound network request — see
+[8. Modes & Configuration](08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned)
+for the full reasoning. Skip this step if you'd rather stay offline; it's
+optional.
+
+A call that references a real, small, public repo — scanned and found
+clean, so it's forwarded normally:
+
+```bash
+printf '%s\n' '{"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "run_command", "arguments": {"command": "git clone https://github.com/octocat/Hello-World.git /tmp/x"}}}' \
+  | ARAN_SCAN_GITHUB_REPOS=1 python -m aran.cli -- python tests/fixtures/fake_server.py
+```
+
+stderr (the one-time notice this feature always prints):
+
+```
+[Aran] GitHub repo scan enabled (ARAN_SCAN_GITHUB_REPOS=1): an outbound call referencing a public GitHub repo will have that repo fetched and scanned before being forwarded - this makes network requests to GitHub
+```
+
+stdout — forwarded normally, exactly like Step 1:
+
+```json
+{"jsonrpc": "2.0", "id": 10, "result": {"content": [{"type": "text", "text": "ran run_command"}]}}
+```
+
+```bash
+tail -n 2 ~/.aran/audit.jsonl
+```
+
+```json
+{"timestamp": "...", "direction": "outbound", "tool_name": "run_command", "outcome": "allowed", "matched_signature": null, "detail": {"repo": "octocat/Hello-World", "files_scanned": 1}}
+{"timestamp": "...", "direction": "inbound", "tool_name": "run_command", "outcome": "allowed", "matched_signature": null}
+```
+
+Now a repo that genuinely doesn't exist — proving the fail-**open**
+behavior against a real GitHub 404, not a simulated one:
+
+```bash
+printf '%s\n' '{"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "run_command", "arguments": {"command": "git clone https://github.com/aran-nonexistent-org-xyz/definitely-not-a-real-repo-12345.git"}}}' \
+  | ARAN_SCAN_GITHUB_REPOS=1 python -m aran.cli -- python tests/fixtures/fake_server.py
+```
+
+stderr — a warning, not a hard failure:
+
+```
+[Aran] warning: GitHub repo scan for aran-nonexistent-org-xyz/definitely-not-a-real-repo-12345 did not complete (could not fetch ...: HTTP Error 404: Not Found); forwarding without it
+```
+
+stdout — the call still went through:
+
+```json
+{"jsonrpc": "2.0", "id": 11, "result": {"content": [{"type": "text", "text": "ran run_command"}]}}
+```
+
+The audit log records the failed scan as `"error"`, distinct from both
+`"allowed"` (scanned, clean) and `"blocked"` (scanned, matched something):
+
+```json
+{"timestamp": "...", "direction": "outbound", "tool_name": "run_command", "outcome": "error", "matched_signature": null, "detail": {"repo": "aran-nonexistent-org-xyz/definitely-not-a-real-repo-12345", "reason": "could not fetch ...: HTTP Error 404: Not Found"}}
+```
+
+For the *blocked* case (a repo whose content actually matches a
+signature), see
+[`tests/test_proxy_repo_scan.py`](../../tests/test_proxy_repo_scan.py) —
+it exercises that path against a small in-memory fake repo rather than a
+real public one, which is the more reliable way to reproduce it (a real
+repo's content can change over time; a test fixture can't).
+
 ## Step 10 (bonus) — Resisting a hostile server: id collision
 
 Everything above used a cooperative practice server. Aran is also tested
@@ -266,12 +338,14 @@ every change to the project.
 
 ## What you just proved
 
-Across eleven commands: both gates correctly allow clean traffic, both
-correctly block/redact malicious traffic, an evasion attempt via
-whitespace substitution fails, dry-run mode observes without enforcing,
-the protocol-machinery exemption holds even against a message crafted to
-test it directly, and the proxy isn't fooled by a server actively trying
-to trick it. That's the entire security surface of this tool, verified by
+Across eleven commands (plus the optional live network step): both gates
+correctly allow clean traffic, both correctly block/redact malicious
+traffic, an evasion attempt via whitespace substitution fails, dry-run
+mode observes without enforcing, the protocol-machinery exemption holds
+even against a message crafted to test it directly, the optional GitHub
+repo scan fails open against a real network error instead of breaking
+your workflow, and the proxy isn't fooled by a server actively trying to
+trick it. That's the entire security surface of this tool, verified by
 hand rather than taken on faith.
 
 ## Next

@@ -162,10 +162,21 @@ anything beyond public URLs.
   useful context for an agent or developer debugging why a call was
   blocked. A bare `-32000` with no `data` means Aran itself couldn't
   safely inspect the message (fail-closed), not a signature match.
+- **Optional: scan a public GitHub repo before it's cloned/downloaded**
+  (`ARAN_SCAN_GITHUB_REPOS=1`). If an outbound call references a
+  `github.com` repo (an HTTPS clone URL or an SSH remote, in any tool's
+  arguments — not tied to a specific tool name), Aran fetches that repo's
+  tarball and scans every file against destructive-command,
+  prompt-injection, hardcoded-secret, and supply-chain
+  (`curl | bash`-style install hooks) signatures *before* the call that
+  would clone it is forwarded. A match blocks the call with
+  `code: -32002`. This is the one feature in Aran that makes outbound
+  network requests, so it's off by default — see
+  [Configuration](#configuration) below.
 
 ## Configuration
 
-Two environment variables, read once at startup:
+Environment variables, read once at startup:
 
 - **`ARAN_MODE=audit`** — dry-run mode. Gate decisions still run and are
   still logged (as `would_block` instead of `blocked`), but nothing is
@@ -175,19 +186,35 @@ Two environment variables, read once at startup:
 - **`ARAN_PROFILE=1`** (or `true`/`yes`/`on`) — prints a timing line to
   stderr for every gated message: how long the outbound check took, and
   how many JSON leaf nodes the inbound scan visited and in how long.
+- **`ARAN_SCAN_GITHUB_REPOS=1`** (or `true`/`yes`/`on`) — enables the
+  GitHub repo scan described above. Prints a one-time startup notice,
+  since this is the only toggle that makes Aran reach the network. If the
+  fetch itself fails (offline, rate-limited, repo not found, ...), the
+  call is forwarded anyway — a failed scan is logged as `"error"`, not
+  treated as a match; see
+  [docs/guide/08-modes-and-configuration.md](docs/guide/08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned)
+  for the full reasoning on why this one check fails open instead of
+  closed.
 
 ```bash
 ARAN_MODE=audit aran -- npx -y @modelcontextprotocol/server-filesystem /path
+ARAN_SCAN_GITHUB_REPOS=1 aran -- npx -y @modelcontextprotocol/server-filesystem /path
 ```
 
 See [TESTING.md](TESTING.md#step-3f-observability--aran_modeaudit-and-aran_profile)
-for worked examples of both.
+for worked examples of `ARAN_MODE`/`ARAN_PROFILE`.
 
 ## Rule config
 
 Signatures live in `src/aran/default-rules.yaml`, which ships inside
-the installed package. Refresh the prompt-injection signatures from a live
-labeled dataset with:
+the installed package, under four keys: `input_gate_signatures` and
+`output_gate_signatures` (the two live gates, described above) plus
+`secret_signatures` and `supply_chain_signatures` (used only by the
+optional GitHub repo scan). The latter two are optional in a hand-edited
+rules file — an older file that predates them loads exactly as before,
+falling back to a small built-in default for whichever it's missing, with
+no warning. Refresh the prompt-injection and destructive-command
+signatures from a live labeled dataset with:
 
 ```bash
 python scripts/sync_threat_intel.py

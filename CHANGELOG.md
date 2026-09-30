@@ -4,6 +4,26 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); this project
 doesn't yet follow strict semantic versioning (pre-1.0).
 
+## [Unreleased]
+
+- **Optional GitHub repo scan** (`ARAN_SCAN_GITHUB_REPOS=1`, off by
+  default): when an outbound tool call references a public GitHub repo
+  (an HTTPS or SSH clone URL, in any tool's arguments), Aran fetches that
+  repo's tarball and scans it for destructive commands, prompt injection,
+  hardcoded secrets, and supply-chain install/build hooks before the call
+  that would clone/download it is forwarded. A match blocks the call with
+  `code: -32002`. This is the one feature in Aran that makes outbound
+  network requests, so it fails *open* (not closed) if the fetch itself
+  can't complete — see `docs/guide/08-modes-and-configuration.md`.
+- Blocked outbound calls now carry richer JSON-RPC error `data`
+  (`code: -32001`): the violation, the matched signature, and a
+  best-effort `target_node` for which argument matched.
+- `ARAN_MODE=audit`: dry-run mode. Every gate decision still runs and is
+  logged (as `would_block`), but nothing is actually blocked or redacted.
+- `ARAN_PROFILE=1`: prints a timing/leaf-count line to stderr per gated
+  message.
+- `docs/guide/`: a full beginner's guide, one concept per page.
+
 ## [0.1.0] — Initial release
 
 - Transparent MCP stdio proxy (`aran -- <command>`): wraps any downstream

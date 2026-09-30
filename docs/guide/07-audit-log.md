@@ -22,7 +22,7 @@ tail -f ~/.aran/audit.jsonl
 
 ## Fields
 
-Every line has exactly five fields (see
+Every line has the same five base fields, plus one optional sixth (see
 [`src/aran/audit.py`](../../src/aran/audit.py) for the code that writes
 them):
 
@@ -33,6 +33,7 @@ them):
 | `tool_name` | string or `null` | Which tool the call/result belongs to. `null` for inbound messages that aren't a response to a `tools/call` (e.g. an `initialize` response). |
 | `outcome` | one of `allowed`, `blocked`, `would_block`, `error` | See below. |
 | `matched_signature` | string or `null` | The exact regex/phrase that matched, or `null` if nothing did. |
+| `detail` | object, **optional** | Only present on entries from the [GitHub repo scan](08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned) (`ARAN_SCAN_GITHUB_REPOS=1`) — every other entry omits this field entirely. Carries `repo` (`"owner/repo"`), and, when relevant, `file`, `category`, `files_scanned`, or `reason` (for an `"error"` outcome). |
 
 ## The four outcomes
 

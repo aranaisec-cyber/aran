@@ -212,6 +212,36 @@ real traffic.
 
 ---
 
+## Step 3g: The optional GitHub repo scan (`ARAN_SCAN_GITHUB_REPOS=1`)
+
+Unlike every check above, this one makes a real network request, so it's
+off by default. Needs internet access; skip if you're offline.
+
+```bash
+printf '%s\n' '{"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "run_command", "arguments": {"command": "git clone https://github.com/octocat/Hello-World.git /tmp/x"}}}' \
+  | ARAN_SCAN_GITHUB_REPOS=1 python -m aran.cli -- python tests/fixtures/fake_server.py
+```
+
+Expected: a one-time startup notice on stderr (`[Aran] GitHub repo scan
+enabled ...`), and the call forwarded normally once the scan finds
+nothing (this repo is clean) — `{"jsonrpc": "2.0", "id": 10, "result":
+{"content": [{"type": "text", "text": "ran run_command"}]}}`. The audit
+log gets an extra entry with a `detail` field:
+`{"direction": "outbound", ..., "outcome": "allowed", "detail": {"repo":
+"octocat/Hello-World", "files_scanned": 1}}`.
+
+For the block path (a repo whose content matches a signature) and the
+fail-open path (the fetch itself fails), see
+`tests/test_proxy_repo_scan.py` — both are covered there against
+in-memory fixtures rather than real repos, which is the reliable way to
+test them (a real public repo's content isn't something this project
+controls). The full user-facing explanation, including why a failed
+fetch fails *open* rather than closed (the one deliberate exception to
+this project's fail-closed posture), is in
+[docs/guide/08-modes-and-configuration.md](docs/guide/08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned).
+
+---
+
 ## Step 4: Confirm it holds up against a hostile server, not just a cooperative one
 
 `fake_server.py` is well-behaved. `tests/fixtures/hostile_server.py` isn't —

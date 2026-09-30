@@ -230,3 +230,57 @@ def test_main_wires_aran_profile_through_to_run_proxy(tmp_path, monkeypatch, cap
     )
 
     assert "[Aran Profiler]" in capsys.readouterr().err
+
+
+# --- ARAN_SCAN_GITHUB_REPOS: env-var parsing ---------------------------------
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+def test_scan_github_repos_enabled_accepts_common_truthy_values(value):
+    assert cli.scan_github_repos_enabled({"ARAN_SCAN_GITHUB_REPOS": value}) is True
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "false", "False"])
+def test_scan_github_repos_enabled_defaults_to_false(value):
+    env = {} if value is None else {"ARAN_SCAN_GITHUB_REPOS": value}
+    assert cli.scan_github_repos_enabled(env) is False
+
+
+def test_main_prints_repo_scan_notice_when_enabled(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+
+    cli.main(
+        ["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(),
+        env={"ARAN_SCAN_GITHUB_REPOS": "1"},
+    )
+
+    err = capsys.readouterr().err
+    assert "[Aran] GitHub repo scan enabled" in err
+    assert "ARAN_SCAN_GITHUB_REPOS=1" in err
+
+
+def test_main_does_not_print_repo_scan_notice_by_default(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+
+    cli.main(["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(), env={})
+
+    assert "repo scan" not in capsys.readouterr().err.lower()
+
+
+def test_main_does_not_scan_a_referenced_repo_unless_enabled(tmp_path, monkeypatch, capsys, fake_server_command):
+    """Without ARAN_SCAN_GITHUB_REPOS set, a call that references a GitHub
+    repo must be forwarded exactly as before this feature existed - no
+    network call, no notice, no audit "detail" field."""
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    request = {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "run_command", "arguments": {"command": "git clone https://github.com/octocat/demo-repo"}},
+    }
+    stdin = io.BytesIO((json.dumps(request) + "\n").encode("utf-8"))
+    stdout = io.BytesIO()
+
+    code = cli.main(["--", *fake_server_command], stdin=stdin, stdout=stdout, env={})
+
+    assert code == 0
+    response = json.loads(stdout.getvalue().decode("utf-8").strip())
+    assert "error" not in response
+    assert "repo scan" not in capsys.readouterr().err.lower()

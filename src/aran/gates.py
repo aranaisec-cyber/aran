@@ -122,6 +122,51 @@ def check_input(text: str, signatures: SignatureList) -> str | None:
     return find_signature_match(text, signatures)
 
 
+# Matches an HTTPS clone/browse URL (github.com/owner/repo, with an optional
+# .git suffix, and tolerant of a trailing path like /tree/main or /archive/...
+# since a browse URL and a clone URL point at the same repo) or an SSH remote
+# (git@github.com:owner/repo.git). Deliberately not anchored to a specific
+# tool name or a literal "git clone" - a downstream MCP server can expose
+# this under any tool name it likes (a shell-command tool, a dedicated
+# "clone_repository" tool, a generic fetch tool downloading a tarball URL),
+# so matching the URL shape itself, wherever it appears in the call, covers
+# all of them without a tool-name allowlist that would need to keep up with
+# every server's naming choices.
+_GITHUB_REPO_URL_RE = re.compile(
+    r"(?:https?://(?:www\.)?github\.com/|git@github\.com:)"
+    r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/"
+    r"(?P<repo>[A-Za-z0-9_.-]+?)"
+    r"(?:\.git)?(?=[/\s\"'<>#?]|$)",
+    re.IGNORECASE,
+)
+
+
+class GitHubRepoRef(NamedTuple):
+    """A GitHub repo referenced somewhere in an outbound tool call, found by
+    find_github_repo_reference. `matched_text` is the exact substring that
+    matched, kept for audit/error context - never used to decide anything."""
+
+    owner: str
+    repo: str
+    matched_text: str
+
+
+def find_github_repo_reference(tool_name: Any, arguments: Any) -> GitHubRepoRef | None:
+    """Best-effort scan of an outbound tool call's name and arguments for a
+    reference to a public GitHub repository (an HTTPS or SSH remote URL).
+    Returns the first match, or None. Used to decide whether the optional
+    GitHub repo scan (see repo_scan.py) should run for this call at all -
+    the overwhelming majority of tool calls don't reference a repo, and this
+    check must stay cheap (a single regex search) for those so the feature
+    costs nothing when it isn't relevant."""
+    parts: list[str] = [str(tool_name)]
+    _collect_strings(arguments, parts)
+    match = _GITHUB_REPO_URL_RE.search("\n".join(parts))
+    if match is None:
+        return None
+    return GitHubRepoRef(owner=match.group("owner"), repo=match.group("repo"), matched_text=match.group(0))
+
+
 def locate_output_match(tool_name: str, arguments: Any, matched_signature: str) -> str:
     """Best-effort: which top-level argument (or the tool name) contains the
     text that matched `matched_signature`, for error-message context only.
