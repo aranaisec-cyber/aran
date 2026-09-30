@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); this project
 doesn't yet follow strict semantic versioning (pre-1.0).
 
-## [Unreleased]
+## [0.1.1] — 2026-09-30
 
 - **`aran_status` built-in tool**: ask your agent "what's aran's status?"
   and get a plain-text summary of recent gate activity (messages checked,

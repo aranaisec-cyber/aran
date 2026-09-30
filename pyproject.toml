@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aran"
-version = "0.1.0"
+version = "0.1.1"
 description = "Aran — a transparent security proxy for MCP stdio servers: blocks destructive tool calls and redacts prompt-injection payloads before they reach your agent or your machine."
 readme = "README.md"
 license = "MIT"
