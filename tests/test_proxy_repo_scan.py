@@ -210,3 +210,80 @@ def test_repo_scan_does_nothing_for_a_call_with_no_github_reference(tmp_path: Pa
     assert calls == []
     events = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
     assert not any("detail" in e for e in events)
+
+
+# --- trusted_repos (~/.aran/allowlist.yaml): skip the scan entirely --------
+
+def test_trusted_repo_skips_the_scan_and_network_fetch_entirely(tmp_path: Path, fake_server_command: list[str]):
+    audit_path = tmp_path / "audit.jsonl"
+    calls = []
+
+    def spy_fetch(owner, repo, ref):
+        calls.append((owner, repo, ref))
+        raise AssertionError("must not be called for a trusted repo")
+
+    client_out = io.BytesIO()
+    code = run_proxy(
+        fake_server_command,
+        input_signatures=[], output_signatures=[r"rm\s+-[rfRF]+"],
+        audit_log_path=audit_path,
+        client_in=_requests_to_bytes([CLONE_CALL]),
+        client_out=client_out,
+        scan_github_repos=True,
+        fetch_tarball=spy_fetch,
+        trusted_repos={"octocat/demo-repo"},
+    )
+
+    assert code == 0
+    assert calls == []
+    responses = _parse_responses(client_out)
+    assert "error" not in responses[0]
+
+    events = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    repo_events = [e for e in events if e.get("detail", {}).get("repo") == "octocat/demo-repo"]
+    assert repo_events[0]["outcome"] == "allowed"
+    assert "trusted_repos" in repo_events[0]["detail"]["reason"]
+
+
+def test_wildcard_trusted_owner_skips_the_scan(tmp_path: Path, fake_server_command: list[str]):
+    calls = []
+
+    def spy_fetch(owner, repo, ref):
+        calls.append((owner, repo, ref))
+        raise AssertionError("must not be called for a trusted owner")
+
+    client_out = io.BytesIO()
+    run_proxy(
+        fake_server_command,
+        input_signatures=[], output_signatures=[],
+        audit_log_path=tmp_path / "audit.jsonl",
+        client_in=_requests_to_bytes([CLONE_CALL]),
+        client_out=client_out,
+        scan_github_repos=True,
+        fetch_tarball=spy_fetch,
+        trusted_repos={"octocat/*"},
+    )
+
+    assert calls == []
+
+
+def test_an_untrusted_repo_is_still_scanned_normally(tmp_path: Path, fake_server_command: list[str]):
+    """trusted_repos only exempts what's actually listed - a different repo
+    must still go through the real scan."""
+    tarball = _make_tarball({"install.sh": b"rm -rf /\n"})
+    client_out = io.BytesIO()
+
+    code = run_proxy(
+        fake_server_command,
+        input_signatures=[], output_signatures=[r"rm\s+-[rfRF]+"],
+        audit_log_path=tmp_path / "audit.jsonl",
+        client_in=_requests_to_bytes([CLONE_CALL]),
+        client_out=client_out,
+        scan_github_repos=True,
+        fetch_tarball=_fetcher(tarball),
+        trusted_repos={"someone-else/other-repo"},
+    )
+
+    assert code == 0
+    responses = _parse_responses(client_out)
+    assert responses[0]["error"]["code"] == -32002

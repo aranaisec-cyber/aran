@@ -284,3 +284,149 @@ def test_main_does_not_scan_a_referenced_repo_unless_enabled(tmp_path, monkeypat
     response = json.loads(stdout.getvalue().decode("utf-8").strip())
     assert "error" not in response
     assert "repo scan" not in capsys.readouterr().err.lower()
+
+
+# --- ~/.aran/allowlist.yaml: personal signature/trusted-repo overrides ------
+
+def test_main_disables_a_signature_listed_in_the_allowlist(tmp_path, monkeypatch, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    allowlist_path = tmp_path / "allowlist.yaml"
+    allowlist_path.write_text("allowed_signatures:\n  - 'rm\\s+-[rfRF]+'\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "DEFAULT_ALLOWLIST_PATH", allowlist_path)
+
+    request = {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "run_command", "arguments": {"command": "rm -rf /"}},
+    }
+    stdin = io.BytesIO((json.dumps(request) + "\n").encode("utf-8"))
+    stdout = io.BytesIO()
+
+    code = cli.main(["--", *fake_server_command], stdin=stdin, stdout=stdout, env={})
+
+    assert code == 0
+    response = json.loads(stdout.getvalue().decode("utf-8").strip())
+    assert "error" not in response, "the allowlisted signature must not block the call"
+    assert response["result"]["content"][0]["text"] == "ran run_command"
+
+
+def test_main_prints_a_notice_when_the_allowlist_disables_signatures(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    allowlist_path = tmp_path / "allowlist.yaml"
+    allowlist_path.write_text("allowed_signatures:\n  - 'rm\\s+-[rfRF]+'\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "DEFAULT_ALLOWLIST_PATH", allowlist_path)
+
+    cli.main(["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(), env={})
+
+    err = capsys.readouterr().err
+    assert "signature(s) disabled by" in err
+    assert str(allowlist_path) in err
+
+
+def test_main_is_silent_about_the_allowlist_when_it_has_no_entries(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(cli, "DEFAULT_ALLOWLIST_PATH", tmp_path / "does-not-exist.yaml")
+
+    cli.main(["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(), env={})
+
+    assert "disabled by" not in capsys.readouterr().err.lower()
+
+
+def test_main_leaves_signatures_not_named_in_the_allowlist_untouched(tmp_path, monkeypatch, fake_server_command):
+    """An allowlist entry for a DIFFERENT signature must not weaken the one
+    that actually matches this call."""
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    allowlist_path = tmp_path / "allowlist.yaml"
+    allowlist_path.write_text('allowed_signatures:\n  - "some other pattern entirely"\n', encoding="utf-8")
+    monkeypatch.setattr(cli, "DEFAULT_ALLOWLIST_PATH", allowlist_path)
+
+    request = {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "run_command", "arguments": {"command": "rm -rf /"}},
+    }
+    stdin = io.BytesIO((json.dumps(request) + "\n").encode("utf-8"))
+    stdout = io.BytesIO()
+
+    cli.main(["--", *fake_server_command], stdin=stdin, stdout=stdout, env={})
+
+    response = json.loads(stdout.getvalue().decode("utf-8").strip())
+    assert response["error"]["code"] == -32001
+
+
+# --- ARAN_LOOP_GUARD: env-var parsing ----------------------------------------
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+def test_loop_guard_enabled_accepts_common_truthy_values(value):
+    assert cli.loop_guard_enabled({"ARAN_LOOP_GUARD": value}) is True
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "false", "False"])
+def test_loop_guard_enabled_defaults_to_false(value):
+    env = {} if value is None else {"ARAN_LOOP_GUARD": value}
+    assert cli.loop_guard_enabled(env) is False
+
+
+def test_loop_guard_threshold_reads_the_env_var():
+    assert cli.loop_guard_threshold({"ARAN_LOOP_GUARD_THRESHOLD": "5"}) == 5
+
+
+def test_loop_guard_threshold_falls_back_on_missing_or_invalid():
+    assert cli.loop_guard_threshold({}) == 20
+    assert cli.loop_guard_threshold({"ARAN_LOOP_GUARD_THRESHOLD": "not a number"}) == 20
+
+
+def test_loop_guard_window_seconds_reads_the_env_var():
+    assert cli.loop_guard_window_seconds({"ARAN_LOOP_GUARD_WINDOW_SECONDS": "30"}) == 30.0
+
+
+def test_loop_guard_window_seconds_falls_back_on_missing_or_invalid():
+    assert cli.loop_guard_window_seconds({}) == 60.0
+    assert cli.loop_guard_window_seconds({"ARAN_LOOP_GUARD_WINDOW_SECONDS": "nope"}) == 60.0
+
+
+def test_main_prints_loop_guard_notice_when_enabled(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+
+    cli.main(
+        ["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(),
+        env={"ARAN_LOOP_GUARD": "1"},
+    )
+
+    err = capsys.readouterr().err
+    assert "loop guard enabled" in err
+    assert "ARAN_LOOP_GUARD=1" in err
+
+
+def test_main_does_not_print_loop_guard_notice_by_default(tmp_path, monkeypatch, capsys, fake_server_command):
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+
+    cli.main(["--", *fake_server_command], stdin=io.BytesIO(b""), stdout=io.BytesIO(), env={})
+
+    assert "loop guard" not in capsys.readouterr().err.lower()
+
+
+def test_main_wires_loop_guard_threshold_through_to_run_proxy(tmp_path, monkeypatch, fake_server_command):
+    """An end-to-end check that a custom threshold from the env actually
+    reaches run_proxy, not just that the env-var parsing functions work in
+    isolation."""
+    monkeypatch.setattr(cli, "DEFAULT_AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    calls = [
+        {"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}}
+        for i in range(1, 4)
+    ]
+    stdin = io.BytesIO(("".join(json.dumps(c) + "\n" for c in calls)).encode("utf-8"))
+    stdout = io.BytesIO()
+
+    cli.main(
+        ["--", *fake_server_command], stdin=stdin, stdout=stdout,
+        env={"ARAN_LOOP_GUARD": "1", "ARAN_LOOP_GUARD_THRESHOLD": "2"},
+    )
+
+    responses = [json.loads(line) for line in stdout.getvalue().decode("utf-8").splitlines() if line.strip()]
+    # Response order in stdout isn't guaranteed to match request order
+    # (blocked responses are synthesized immediately, allowed ones
+    # round-trip through the child process on a separate thread) - look
+    # each one up by id.
+    by_id = {r["id"]: r for r in responses}
+    assert "error" not in by_id[1]
+    assert by_id[2]["error"]["code"] == -32003
+    assert by_id[3]["error"]["code"] == -32003

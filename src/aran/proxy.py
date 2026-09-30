@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
+from aran.allowlist import is_trusted_repo
 from aran.audit import log_event
 from aran.gates import (
     GitHubRepoRef,
@@ -18,11 +19,15 @@ from aran.gates import (
     find_github_repo_reference,
     locate_output_match,
 )
+from aran.loop_guard import DEFAULT_THRESHOLD, DEFAULT_WINDOW_SECONDS, LoopGuard
 from aran.repo_scan import FetchTarballFn, default_fetch_tarball, scan_repo
 from aran.status import (
+    EXPLAIN_TOOL_DEFINITION,
+    EXPLAIN_TOOL_NAME,
     PROXY_INSTRUCTIONS,
     STATUS_TOOL_DEFINITION,
     STATUS_TOOL_NAME,
+    build_explain_report,
     build_status_report,
 )
 
@@ -46,6 +51,13 @@ CODE_SIGNATURE_BLOCKED = -32001
 # call's OWN arguments never matched anything; the problem is in the
 # repo's content, not in the call itself.
 CODE_REPO_SCAN_BLOCKED = -32002
+
+# A call blocked by the optional loop guard (ARAN_LOOP_GUARD=1) - the same
+# call, identical arguments, repeated past its threshold inside the
+# tracking window. Distinct from -32001: no signature matched anything,
+# the call itself may be entirely benign - it's the repetition that's the
+# problem, not the content.
+CODE_LOOP_GUARD_BLOCKED = -32003
 
 REDACTION_NOTICE = "[Aran] content blocked: flagged as a probable prompt injection"
 
@@ -413,16 +425,23 @@ def _gate_github_repo_reference(
     fetch_tarball: FetchTarballFn,
     blocked: list[tuple[RequestId, str, int, dict | None]],
     audit_only: bool,
+    trusted_repos: set[str] | None = None,
 ) -> bool:
     """The optional GitHub repo scan (ARAN_SCAN_GITHUB_REPOS=1): if this call
     references a public GitHub repo, fetch and scan it before the call that
     would clone/download it is allowed through. Returns True if the call was
     dropped (appended to `blocked`), False otherwise.
 
-    Three distinct outcomes, each logged differently:
+    Four distinct outcomes, each logged differently:
       - no repo referenced: nothing to do, not logged (the overwhelming
         majority of calls; logging every one would just be audit noise for a
         feature this call never touched).
+      - the repo is in the developer's personal trusted_repos allowlist
+        (~/.aran/allowlist.yaml, see allowlist.py): the scan - and its
+        network fetch - is skipped entirely, logged as "allowed" with
+        detail noting why. This is the one thing in this function that
+        actually saves latency, not just a permissive verdict after doing
+        the work.
       - referenced but the scan itself failed (network error, timeout, repo
         not found, corrupt archive, ...): logged as "error" and the call is
         allowed through anyway. This is a deliberate fail-OPEN, unlike every
@@ -439,8 +458,20 @@ def _gate_github_repo_reference(
     if ref is None:
         return False
 
-    result = scan_repo(ref.owner, ref.repo, signatures_by_category=repo_signatures, fetch_tarball=fetch_tarball)
     repo_label = f"{ref.owner}/{ref.repo}"
+
+    if trusted_repos and is_trusted_repo(ref.owner, ref.repo, trusted_repos):
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="allowed",
+            matched_signature=None,
+            detail={"repo": repo_label, "reason": "trusted_repos allowlist - scan skipped"},
+        )
+        return False
+
+    result = scan_repo(ref.owner, ref.repo, signatures_by_category=repo_signatures, fetch_tarball=fetch_tarball)
 
     if result.error is not None:
         log_event(
@@ -522,6 +553,8 @@ def _gate_outbound_object(
     pending_list_requests: set[RequestId] | None = None,
     answered: list[tuple[RequestId, str]] | None = None,
     pending_initialize_requests: set[RequestId] | None = None,
+    trusted_repos: set[str] | None = None,
+    loop_guard: LoopGuard | None = None,
 ) -> Any:
     """Gates one client->server JSON-RPC object. Returns the object to forward,
     or _DROP when the call is blocked - in which case (id, message, code, data)
@@ -583,6 +616,23 @@ def _gate_outbound_object(
         answered.append((request_id, text))
         return _DROP
 
+    if tool_name == EXPLAIN_TOOL_NAME and answered is not None:
+        # Same reasoning as aran_status above: this is a dry run against
+        # the signature sets, never an actual gate decision, so it's
+        # answered directly and skips check_output entirely - a `text`
+        # argument crafted to look destructive is exactly what a developer
+        # is supposed to be able to test here without tripping the real gate.
+        text = build_explain_report(arguments, repo_signatures or {})
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="allowed",
+            matched_signature=None,
+        )
+        answered.append((request_id, text))
+        return _DROP
+
     matched = check_output(tool_name, arguments, output_signatures)
     if matched:
         if not audit_only:
@@ -633,9 +683,43 @@ def _gate_outbound_object(
             fetch_tarball=fetch_tarball,
             blocked=blocked,
             audit_only=audit_only,
+            trusted_repos=trusted_repos,
         )
         if dropped:
             return _DROP
+
+    if loop_guard is not None:
+        count = loop_guard.record(tool_name, arguments)
+        if loop_guard.would_block(count):
+            message_text = (
+                f"[Aran] blocked: {count} identical calls to {tool_name!r} "
+                f"within {loop_guard.window_seconds:.0f}s - possible runaway loop"
+            )
+            data = {
+                "violation": "repeated identical call - possible runaway loop",
+                "tool_name": tool_name,
+                "count": count,
+                "window_seconds": loop_guard.window_seconds,
+            }
+            if not audit_only:
+                log_event(
+                    audit_log_path,
+                    direction="outbound",
+                    tool_name=tool_name,
+                    outcome="blocked",
+                    matched_signature=None,
+                    detail=data,
+                )
+                blocked.append((request_id, message_text, CODE_LOOP_GUARD_BLOCKED, data))
+                return _DROP
+            log_event(
+                audit_log_path,
+                direction="outbound",
+                tool_name=tool_name,
+                outcome="would_block",
+                matched_signature=None,
+                detail=data,
+            )
 
     # This write must happen before the line is forwarded, otherwise the
     # response can come back before the id is registered.
@@ -694,6 +778,8 @@ def _gate_outbound_message(
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
     pending_list_requests: set[RequestId] | None = None,
     pending_initialize_requests: set[RequestId] | None = None,
+    trusted_repos: set[str] | None = None,
+    loop_guard: LoopGuard | None = None,
 ) -> bytes | None:
     """Applies the output gate to one client->server line. Returns the bytes to
     forward to the server, or None if everything in the line was blocked (in
@@ -722,6 +808,8 @@ def _gate_outbound_message(
         pending_list_requests=pending_list_requests,
         answered=answered,
         pending_initialize_requests=pending_initialize_requests,
+        trusted_repos=trusted_repos,
+        loop_guard=loop_guard,
     )
 
     if blocked:
@@ -780,6 +868,8 @@ def _pump_client_to_server(
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
     pending_list_requests: set[RequestId] | None = None,
     pending_initialize_requests: set[RequestId] | None = None,
+    trusted_repos: set[str] | None = None,
+    loop_guard: LoopGuard | None = None,
 ) -> None:
     try:
         while True:
@@ -802,6 +892,8 @@ def _pump_client_to_server(
                     fetch_tarball=fetch_tarball,
                     pending_list_requests=pending_list_requests,
                     pending_initialize_requests=pending_initialize_requests,
+                    trusted_repos=trusted_repos,
+                    loop_guard=loop_guard,
                 )
                 if profile:
                     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -898,22 +990,25 @@ def _safe_peek_id(line: bytes) -> RequestId:
 
 
 def _inject_status_tool_listing(message: dict) -> None:
-    """Splices aran_status's definition into a tools/list response's
-    result.tools, so an agent can discover and call it the normal way
-    instead of only when a developer names it exactly. Best-effort and
-    silent: a result that isn't a dict, or has no `tools` list, isn't the
-    shape this expects - left alone rather than forced into that shape,
-    the same "don't fabricate structure the server didn't send" stance
-    locate_output_match and the repo scan already take elsewhere."""
+    """Splices aran_status's and aran_explain's definitions into a
+    tools/list response's result.tools, so an agent can discover and call
+    them the normal way instead of only when a developer names one
+    exactly. Best-effort and silent: a result that isn't a dict, or has no
+    `tools` list, isn't the shape this expects - left alone rather than
+    forced into that shape, the same "don't fabricate structure the server
+    didn't send" stance locate_output_match and the repo scan already take
+    elsewhere."""
     result = message.get("result")
     if not isinstance(result, dict):
         return
     tools = result.get("tools")
     if not isinstance(tools, list):
         return
-    if any(isinstance(t, dict) and t.get("name") == STATUS_TOOL_NAME for t in tools):
-        return  # already present - a hostile/unusual server claiming the name, or a re-spliced id
-    tools.append(dict(STATUS_TOOL_DEFINITION))
+    existing_names = {t.get("name") for t in tools if isinstance(t, dict)}
+    for definition in (STATUS_TOOL_DEFINITION, EXPLAIN_TOOL_DEFINITION):
+        if definition["name"] in existing_names:
+            continue  # already present - a hostile/unusual server claiming the name, or a re-spliced id
+        tools.append(dict(definition))
 
 
 def _inject_proxy_instructions(message: dict) -> None:
@@ -1205,6 +1300,10 @@ def run_proxy(
     secret_signatures: SignatureList = (),
     supply_chain_signatures: SignatureList = (),
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
+    trusted_repos: set[str] | None = None,
+    loop_guard_enabled: bool = False,
+    loop_guard_threshold: int = DEFAULT_THRESHOLD,
+    loop_guard_window_seconds: float = DEFAULT_WINDOW_SECONDS,
 ) -> int:
     """Spawns `command` as the real MCP server and relays JSON-RPC between
     client_in/client_out (the IDE side) and the child's stdio, applying the
@@ -1243,7 +1342,17 @@ def run_proxy(
     `instructions` field, so the agent learns what a blocked-call error or
     a redaction notice means at session start, before it can hit either -
     the actual answer to "can the agent respond faster": zero extra round
-    trips, because the context is already there the first time it matters."""
+    trips, because the context is already there the first time it matters.
+
+    loop_guard_enabled=True (ARAN_LOOP_GUARD=1) blocks a tool call once the
+    same call (same name, same arguments) has repeated
+    loop_guard_threshold times within loop_guard_window_seconds - a
+    frequency-based check, not content-based, for a stuck/looping agent
+    hammering an otherwise-benign call. Off by default: unlike every
+    content-based check in this file, a fast legitimate repeat (polling,
+    an intentional retry) looks identical to a genuine loop by design, so
+    this is opt-in the same way the GitHub repo scan is, for a different
+    reason (see loop_guard.py)."""
     compiled_input = compile_signatures(input_signatures)
     compiled_output = compile_signatures(output_signatures)
     repo_signatures = {
@@ -1252,6 +1361,11 @@ def run_proxy(
         "secret": compile_signatures(secret_signatures),
         "supply_chain": compile_signatures(supply_chain_signatures),
     }
+    loop_guard = (
+        LoopGuard(threshold=loop_guard_threshold, window_seconds=loop_guard_window_seconds)
+        if loop_guard_enabled
+        else None
+    )
 
     child = subprocess.Popen(
         command,
@@ -1289,6 +1403,8 @@ def run_proxy(
                 fetch_tarball=fetch_tarball,
                 pending_list_requests=pending_list_requests,
                 pending_initialize_requests=pending_initialize_requests,
+                trusted_repos=trusted_repos,
+                loop_guard=loop_guard,
             ),
             degraded,
         ),

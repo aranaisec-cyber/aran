@@ -26,7 +26,8 @@ useful the first time, or whenever "how does this actually work?" comes up.
    Cursor, and any other MCP-speaking tool: the one edit you make to your
    existing server config, plus how to confirm it's actually active by
    just asking your agent ("what's aran's status?") instead of opening a
-   log file.
+   log file, and how to ask "would this get blocked?" before running
+   something.
 5. **[The Outbound Gate](05-outbound-gate.md)** — how Aran decides whether
    a tool call your agent is about to make is safe to send, worked through
    with real examples of an allowed call and a blocked one.
@@ -39,8 +40,9 @@ useful the first time, or whenever "how does this actually work?" comes up.
 8. **[Modes & Configuration](08-modes-and-configuration.md)** — dry-run
    mode (`ARAN_MODE=audit`), the profiler (`ARAN_PROFILE=1`), the optional
    GitHub repo scan (`ARAN_SCAN_GITHUB_REPOS=1`) that checks a repo before
-   it's cloned, and how to edit or refresh the signature rules Aran gates
-   against.
+   it's cloned, the loop guard (`ARAN_LOOP_GUARD=1`) for a stuck/looping
+   agent, your personal `~/.aran/allowlist.yaml` overrides, and how to
+   edit or refresh the signature rules Aran gates against.
 9. **[Hands-On Walkthrough](09-hands-on-walkthrough.md)** — an extended,
    copy-pasteable session that fires every case in both gates (clean,
    blocked, evasion attempt, dry-run, protocol-field exemption, a hostile

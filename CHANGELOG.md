@@ -14,6 +14,32 @@ doesn't yet follow strict semantic versioning (pre-1.0).
   whatever instructions the real server already provides. Always on, zero
   extra tool calls - the agent recognizes Aran's behavior correctly the
   first time it happens instead of misreading a block as a bug.
+- **Personal allowlist** (`~/.aran/allowlist.yaml`, never touched by
+  `scripts/sync_threat_intel.py`): `allowed_signatures` disables specific
+  signatures by exact string (copy-paste a `matched_signature` value
+  straight out of the audit log to silence a false positive for yourself,
+  durably, without editing the shared rules file); `trusted_repos`
+  (`owner/repo` or `owner/*`) skips the GitHub repo scan - and its network
+  fetch - entirely for repos you already trust. A startup notice reports
+  how many signatures were disabled when the file has entries.
+- **`aran_explain` built-in tool**: ask whether a piece of text would be
+  blocked or redacted, and by which signature, without sending it
+  anywhere - a dry run against the same four signature categories the
+  real gates use. Same self-answering pattern as `aran_status`: never
+  forwarded to the wrapped server, spliced into `tools/list`.
+- **`aran_status` gains `format: "json"`**: a machine-readable object
+  (`active`, `mode`, `by_outcome`, `most_recent_non_clean_event`, ...) for
+  scripts or CI checks to assert against, instead of parsing the
+  plain-text summary.
+- **Optional loop guard** (`ARAN_LOOP_GUARD=1`, off by default): blocks a
+  tool call once the exact same call (same name, same arguments) repeats
+  past a threshold (`ARAN_LOOP_GUARD_THRESHOLD`, default 20) within a
+  tracking window (`ARAN_LOOP_GUARD_WINDOW_SECONDS`, default 60) -
+  frequency-based, not content-based, for a stuck/looping agent hammering
+  an otherwise-benign call. Blocked with `code: -32003`. Off by default
+  because, unlike the content-based gates, a fast legitimate repeat
+  (polling, an intentional retry) looks identical to a genuine loop by
+  design. Aran's own `aran_status`/`aran_explain` calls are exempt.
 
 ## [0.1.1] — 2026-09-30
 

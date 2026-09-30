@@ -173,3 +173,29 @@ def test_aran_status_call_is_logged_in_the_audit_trail(tmp_path: Path, fake_serv
     assert len(status_events) == 1
     assert status_events[0]["direction"] == "outbound"
     assert status_events[0]["outcome"] == "allowed"
+
+
+def test_aran_status_format_json_returns_parseable_machine_readable_data(tmp_path: Path, fake_server_command: list[str]):
+    audit_path = tmp_path / "audit.jsonl"
+    client_in = _requests_to_bytes([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "run_command", "arguments": {"command": "rm -rf /"}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "aran_status", "arguments": {"format": "json"}}},
+    ])
+    client_out = io.BytesIO()
+
+    run_proxy(
+        fake_server_command,
+        input_signatures=[], output_signatures=[r"rm\s+-[rfRF]+"],
+        audit_log_path=audit_path,
+        client_in=client_in,
+        client_out=client_out,
+    )
+
+    responses = _parse_responses(client_out)
+    status_response = next(r for r in responses if r["id"] == 2)
+    text = status_response["result"]["content"][0]["text"]
+    data = json.loads(text)  # must be valid JSON, not the plain-text report
+
+    assert data["active"] is True
+    assert data["mode"] == "enforcing"
+    assert data["by_outcome"]["blocked"] == 1

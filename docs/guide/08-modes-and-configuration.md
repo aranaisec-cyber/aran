@@ -200,6 +200,97 @@ forwards exactly as it always did — this feature costs nothing for the
 overwhelming majority of tool calls that never reference a GitHub repo at
 all, and is fully inert unless you turn it on.
 
+## Optional: `ARAN_LOOP_GUARD=1` — block a runaway/looping agent
+
+Every check elsewhere in this guide is **content**-based — it looks at
+*what* a call or response contains. This one is different: it's
+**frequency**-based. It doesn't care what a tool call contains, only that
+the exact same call (same tool name, same arguments) is repeating fast.
+
+**What it does:** once the identical call has happened
+`ARAN_LOOP_GUARD_THRESHOLD` times (default **20**) within
+`ARAN_LOOP_GUARD_WINDOW_SECONDS` (default **60**), every further repeat
+of that same call is blocked with a JSON-RPC error, `code: -32003`, until
+the window ages out. Two calls with the same tool name but *different*
+arguments are tracked completely separately — this only catches a call
+repeating with the same arguments, not normal varied tool use.
+
+```bash
+ARAN_LOOP_GUARD=1 aran -- npx -y @modelcontextprotocol/server-filesystem /path
+# tune the threshold/window:
+ARAN_LOOP_GUARD=1 ARAN_LOOP_GUARD_THRESHOLD=10 ARAN_LOOP_GUARD_WINDOW_SECONDS=30 aran -- ...
+```
+
+**Why it's off by default:** every other check in this guide is
+content-based, so a legitimate message never trips it by accident — the
+signature either matches dangerous content or it doesn't. Frequency is
+different: a fast, *intentional* repeat (polling a status endpoint,
+retrying a flaky network call a few times) looks structurally identical
+to a genuine stuck loop. Getting that distinction wrong blocks something
+that was never dangerous, so — like the GitHub repo scan, for a different
+reason — this needs an explicit opt-in rather than being on by default.
+
+**Worked example** — five identical calls, threshold set to 3:
+
+```bash
+printf '%s\n%s\n%s\n%s\n%s\n' \
+  '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}}' \
+  '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}}' \
+  '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}}' \
+  '{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}}' \
+  '{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "list_files", "arguments": {}}}' \
+  | ARAN_LOOP_GUARD=1 ARAN_LOOP_GUARD_THRESHOLD=3 python -m aran.cli -- python tests/fixtures/fake_server.py
+```
+
+Calls 1 and 2 come back clean; call 3 (the threshold) and every call
+after it come back blocked:
+
+```json
+{"jsonrpc": "2.0", "id": 3, "error": {"code": -32003, "message": "[Aran] blocked: 3 identical calls to 'list_files' within 60s - possible runaway loop", "data": {"violation": "repeated identical call - possible runaway loop", "tool_name": "list_files", "count": 3, "window_seconds": 60.0}}}
+```
+
+Aran's own `aran_status` and `aran_explain` calls are exempt — they're
+answered before this check ever runs, so asking `aran_status` several
+times in a row while debugging never trips it.
+
+## The personal allowlist: `~/.aran/allowlist.yaml`
+
+No environment variable enables this — it's a plain YAML file you create
+yourself. Unlike the rules file, nothing ships it, nothing ever
+overwrites it (`scripts/sync_threat_intel.py` never touches it), and its
+absence is completely normal — most developers will never create one.
+
+```yaml
+allowed_signatures:
+  - "rm\\s+-[rfRF]+"     # the exact matched_signature text, copied from the audit log
+trusted_repos:
+  - octocat/demo          # owner/repo, exact
+  - my-org/*               # every repo under an owner
+```
+
+**`allowed_signatures`** — disables specific signatures by their exact
+source string, across all four categories (destructive-command,
+prompt-injection, secret, supply-chain). The intended workflow: something
+gets blocked or redacted, you decide it's a false positive, you find its
+`matched_signature` value in `~/.aran/audit.jsonl` (see
+[7. The Audit Log](07-audit-log.md)), and you paste that exact string
+into this list. Matching is exact-string, not fuzzy — this is deliberate,
+so you never accidentally disable more than you meant to.
+
+When the file has entries, Aran prints a one-time startup notice:
+
+```
+[Aran] 1 signature(s) disabled by /home/you/.aran/allowlist.yaml (personal allowlist)
+```
+
+**`trusted_repos`** — only matters when `ARAN_SCAN_GITHUB_REPOS=1` is
+also set. A repo listed here (or matched by an `owner/*` wildcard) skips
+the content scan **and its network fetch** entirely — not "scanned and
+found clean," but never fetched at all. This is the one entry in this
+whole file that actually saves latency, not just changes a verdict. The
+audit log records this distinctly (`"reason": "trusted_repos allowlist -
+scan skipped"`) so it's never confused with a real scan result.
+
 ## The rules file
 
 The actual signatures every check above uses live in a YAML file shipped

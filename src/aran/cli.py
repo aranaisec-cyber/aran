@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import BinaryIO
 
+from aran.allowlist import filter_signatures, load_allowlist
+from aran.loop_guard import DEFAULT_THRESHOLD, DEFAULT_WINDOW_SECONDS
 from aran.proxy import run_proxy
 from aran.rules import INPUT_KEY, OUTPUT_KEY, load_rules_detailed
 
@@ -25,6 +27,7 @@ def default_rules_path() -> Path:
 
 DEFAULT_RULES_PATH = default_rules_path()
 DEFAULT_AUDIT_LOG_PATH = Path.home() / ".aran" / "audit.jsonl"
+DEFAULT_ALLOWLIST_PATH = Path.home() / ".aran" / "allowlist.yaml"
 
 USAGE = "usage: aran -- <command to launch the real MCP server> [args...]"
 
@@ -85,6 +88,38 @@ def scan_github_repos_enabled(env: dict[str, str]) -> bool:
     return value not in ("", "0", "false")
 
 
+def loop_guard_enabled(env: dict[str, str]) -> bool:
+    """ARAN_LOOP_GUARD=1 (or any other non-empty, non-"0"/"false" value)
+    enables the loop guard: an identical tool call (same name, same
+    arguments) repeated past a threshold within a time window gets
+    blocked (see loop_guard.py). Off by default - this is a
+    frequency-based check that can't tell a genuine stuck loop apart from
+    a fast, legitimate, intentional repeat by content alone, so unlike
+    most of Aran it's opt-in."""
+    value = env.get("ARAN_LOOP_GUARD", "").strip().lower()
+    return value not in ("", "0", "false")
+
+
+def loop_guard_threshold(env: dict[str, str]) -> int:
+    """ARAN_LOOP_GUARD_THRESHOLD overrides the default repeat count that
+    trips the loop guard. Any missing or non-integer value falls back to
+    the default rather than raising - a typo here should degrade to
+    "guard uses its default," never crash the proxy."""
+    try:
+        return int(env["ARAN_LOOP_GUARD_THRESHOLD"])
+    except (KeyError, ValueError):
+        return DEFAULT_THRESHOLD
+
+
+def loop_guard_window_seconds(env: dict[str, str]) -> float:
+    """ARAN_LOOP_GUARD_WINDOW_SECONDS overrides the default tracking
+    window. Same fallback-on-bad-input behavior as loop_guard_threshold."""
+    try:
+        return float(env["ARAN_LOOP_GUARD_WINDOW_SECONDS"])
+    except (KeyError, ValueError):
+        return DEFAULT_WINDOW_SECONDS
+
+
 def _warn_about_rules_fallback(path: Path, reasons: dict[str, str], input_count: int, output_count: int) -> None:
     unique_reasons = list(dict.fromkeys(reasons.values()))
     counts = []
@@ -126,6 +161,27 @@ def main(
             len(rules.output_signatures),
         )
 
+    allowlist = load_allowlist(DEFAULT_ALLOWLIST_PATH)
+    input_signatures = filter_signatures(rules.input_signatures, allowlist.signatures)
+    output_signatures = filter_signatures(rules.output_signatures, allowlist.signatures)
+    secret_signatures = filter_signatures(rules.secret_signatures, allowlist.signatures)
+    supply_chain_signatures = filter_signatures(rules.supply_chain_signatures, allowlist.signatures)
+    if allowlist.signatures:
+        removed = (
+            (len(rules.input_signatures) - len(input_signatures))
+            + (len(rules.output_signatures) - len(output_signatures))
+            + (len(rules.secret_signatures) - len(secret_signatures))
+            + (len(rules.supply_chain_signatures) - len(supply_chain_signatures))
+        )
+        # Printed unconditionally when the allowlist file has entries, same
+        # as the mode notices below: a developer forgetting they disabled a
+        # signature months ago should never be a silent surprise.
+        print(
+            f"[Aran] {removed} signature(s) disabled by {DEFAULT_ALLOWLIST_PATH} "
+            "(personal allowlist)",
+            file=sys.stderr,
+        )
+
     audit_only = audit_only_enabled(env)
     if audit_only:
         # Printed unconditionally, every run, specifically so a developer who
@@ -151,19 +207,34 @@ def main(
             file=sys.stderr,
         )
 
+    loop_guard = loop_guard_enabled(env)
+    threshold = loop_guard_threshold(env)
+    window_seconds = loop_guard_window_seconds(env)
+    if loop_guard:
+        print(
+            f"[Aran] loop guard enabled (ARAN_LOOP_GUARD=1): an identical "
+            f"tool call repeated {threshold}+ times within {window_seconds:.0f}s "
+            "will be blocked",
+            file=sys.stderr,
+        )
+
     try:
         return run_proxy(
             resolve_command(command),
-            input_signatures=rules.input_signatures,
-            output_signatures=rules.output_signatures,
+            input_signatures=input_signatures,
+            output_signatures=output_signatures,
             audit_log_path=DEFAULT_AUDIT_LOG_PATH,
             client_in=stdin or sys.stdin.buffer,
             client_out=stdout or sys.stdout.buffer,
             audit_only=audit_only,
             profile=profile_enabled(env),
             scan_github_repos=scan_github_repos,
-            secret_signatures=rules.secret_signatures,
-            supply_chain_signatures=rules.supply_chain_signatures,
+            secret_signatures=secret_signatures,
+            supply_chain_signatures=supply_chain_signatures,
+            trusted_repos=allowlist.trusted_repos,
+            loop_guard_enabled=loop_guard,
+            loop_guard_threshold=threshold,
+            loop_guard_window_seconds=window_seconds,
         )
     except OSError as e:
         # Popen failures (command not found, not executable, ...) must surface

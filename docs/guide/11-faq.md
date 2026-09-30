@@ -65,11 +65,23 @@ place. See [1. What Is Aran?](01-what-is-aran.md#what-aran-deliberately-does-not
 
 **Can a false positive break my workflow?**
 It can, in the sense that a legitimate call or piece of content could in
-principle match a signature it shouldn't. Two mitigations: run
-`ARAN_MODE=audit` to see what *would* be blocked before enforcing (see
-[8. Modes & Configuration](08-modes-and-configuration.md)), and report
-(or locally edit) a false positive once you find one — see
+principle match a signature it shouldn't. Three mitigations: run
+`ARAN_MODE=audit` to see what *would* be blocked before enforcing; ask
+`aran_explain` to check a specific command before running it; and once
+you find a real false positive, add its exact `matched_signature` to
+`~/.aran/allowlist.yaml` — a personal, durable override that survives a
+rules-file refresh (unlike editing `default-rules.yaml` directly). See
+[8. Modes & Configuration](08-modes-and-configuration.md) and
 [10. Troubleshooting](10-troubleshooting.md#something-legitimate-got-blockedredacted-false-positive).
+
+**My agent seems stuck calling the same tool over and over — can Aran
+catch that?**
+Optionally: `ARAN_LOOP_GUARD=1` blocks a call once it repeats identically
+past a threshold within a time window — a frequency check, not a content
+one, so it catches a stuck loop even when every individual call looks
+completely harmless. Off by default, because a fast *intentional* repeat
+(polling, a deliberate retry) looks the same as a stuck loop by design.
+See [8. Modes & Configuration](08-modes-and-configuration.md#optional-aran_loop_guard1--block-a-runawaylooping-agent).
 
 **How is this different from a firewall or antivirus?**
 Both of those operate at a layer that can't see this specific
