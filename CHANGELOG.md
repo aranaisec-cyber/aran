@@ -4,8 +4,19 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); this project
 doesn't yet follow strict semantic versioning (pre-1.0).
 
-## [Unreleased]
+## [0.1.2] — 2026-09-30
 
+- **Repositioned**: Aran is now introduced everywhere as "the lightweight,
+  open-source developer framework for local IDE telemetry and local
+  input/output guardrails" instead of "a transparent security proxy" /
+  "wrapper" - the PyPI description, README, the marketing site, and the
+  two agent-facing strings in `status.py`. Every mention of telemetry is
+  explicit that it's local-only, never transmitted, to stay consistent
+  with the project's zero-transmission stance.
+- **Architecture diagram** in README.md: a Mermaid flowchart of the core
+  request/response loop (IDE → outbound gate → real MCP server → inbound
+  gate → IDE), with the blocked path and the audit log as dashed edges.
+  Renders natively on GitHub, no image hosting.
 - **Session-start self-description**: Aran appends a short paragraph to
   the `initialize` response's `instructions` field (MCP's own mechanism
   for text the client feeds to the model at connection time) explaining
