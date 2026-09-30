@@ -35,6 +35,35 @@ agent and its tools actually talk to each other.
 Aran sits inline at that layer instead, as a stdio proxy your IDE launches
 transparently.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    IDE["Your IDE / AI Agent"]
+    OUT{{"Outbound Gate<br/>destructive-command signatures"}}
+    SERVER["Real MCP Server<br/>(subprocess)"]
+    IN{{"Inbound Gate<br/>prompt-injection signatures"}}
+    LOG[("~/.aran/audit.jsonl")]
+
+    IDE -- "1. tool call" --> OUT
+    OUT -- "2. clean" --> SERVER
+    OUT -. "blocked" .-> IDE
+    SERVER -- "3. tool result" --> IN
+    IN -- "4. clean / redacted" --> IDE
+
+    OUT -.-> LOG
+    IN -.-> LOG
+```
+
+Aran spawns the real MCP server as a child process and sits between it and
+your IDE, checking every message on the way through — solid arrows are the
+normal path, dashed arrows are what happens on a match. Nothing about the
+downstream server changes, and every gated message (allowed or blocked) is
+written to the audit log regardless of outcome. The optional features
+(GitHub repo scan, loop guard, personal allowlist, the `aran_status`/
+`aran_explain` tools) all plug into this same pair of gates — see
+[How it works](#how-it-works) below for each one.
+
 **New to Aran?** [docs/guide/](https://github.com/aranaisec-cyber/aran/blob/develop/docs/guide/README.md) is a full,
 beginner-friendly walkthrough — one concept per page, from "what is MCP"
 through installing, wiring it into your IDE, and a hands-on session that
