@@ -68,3 +68,32 @@ def log_event(
                 f.write(line)
     except OSError as e:
         _warn_once(log_path, e)
+
+
+def read_events(log_path: Path) -> list[dict[str, Any]]:
+    """Reads and parses every line of the audit log, for read-only reporting
+    (the aran_status meta-tool - see status.py). Returns [] if the file
+    doesn't exist yet - a fresh install or a session with no gated traffic
+    is not an error condition here.
+
+    Tolerates a blank or malformed line by skipping it rather than raising:
+    this file is meant to be readable while the proxy is still appending to
+    it (the guide tells users to `tail -f` it directly), so a reader has to
+    handle the same possibility of a line torn by a concurrent write that
+    `tail` itself would. This is a diagnostic helper, not the gate - failing
+    soft here costs one skipped line, never a security decision."""
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    events = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events

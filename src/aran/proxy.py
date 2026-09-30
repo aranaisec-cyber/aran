@@ -19,6 +19,7 @@ from aran.gates import (
     locate_output_match,
 )
 from aran.repo_scan import FetchTarballFn, default_fetch_tarball, scan_repo
+from aran.status import STATUS_TOOL_DEFINITION, STATUS_TOOL_NAME, build_status_report
 
 RequestId = int | str | None
 
@@ -102,6 +103,17 @@ def _blocked_response(
     data: dict | None = None,
 ) -> bytes:
     return _encode_json_line(_blocked_payload(request_id, message, code=code, data=data))
+
+
+def _status_payload(request_id: RequestId, text: str) -> dict:
+    """A normal, successful tool-call result - the aran_status meta-tool
+    (status.py) never fails the way a real tool call might, so unlike
+    _blocked_payload this has no error/code/data branch."""
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {"content": [{"type": "text", "text": text}]},
+    }
 
 
 def _warn(text: str) -> None:
@@ -502,16 +514,36 @@ def _gate_outbound_object(
     repo_scan_enabled: bool = False,
     repo_signatures: dict[str, SignatureList] | None = None,
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
+    pending_list_requests: set[RequestId] | None = None,
+    answered: list[tuple[RequestId, str]] | None = None,
 ) -> Any:
     """Gates one client->server JSON-RPC object. Returns the object to forward,
     or _DROP when the call is blocked - in which case (id, message, code, data)
     is appended to `blocked` so the caller can answer the client in the framing
-    the client used.
+    the client used. Also _DROP for a self-answered aran_status call, in which
+    case (id, text) is appended to `answered` instead - same drop-and-answer
+    shape, but a normal result rather than an error.
 
     In audit_only mode a match is logged as "would_block" but the call is
     still forwarded and registered exactly like a clean call - nothing is
     ever dropped while ARAN_MODE=audit. The same applies to a repo-scan match
-    when repo_scan_enabled is on."""
+    when repo_scan_enabled is on. aran_status is unaffected by audit_only -
+    it never blocks anything itself, so there is nothing for that mode to
+    disable."""
+    if message.get("method") == "tools/list" and pending_list_requests is not None:
+        # Registered so the inbound side can splice aran_status into the
+        # real tools/list response when it comes back - tracked the same
+        # bounded, insertion-order-agnostic way as pending_tool_calls,
+        # because this is a discoverability nicety, not a gating decision:
+        # losing a stale entry under load costs one missed splice, never a
+        # security check.
+        request_id = _usable_request_id(message.get("id"))
+        with pending_lock:
+            pending_list_requests.add(request_id)
+            while len(pending_list_requests) > _MAX_PENDING_TOOL_CALLS:
+                pending_list_requests.pop()
+        return message
+
     if message.get("method") != "tools/call":
         return message
 
@@ -523,6 +555,24 @@ def _gate_outbound_object(
         tool_name = ""
     arguments = params.get("arguments")
     request_id = _usable_request_id(message.get("id"))
+
+    if tool_name == STATUS_TOOL_NAME and answered is not None:
+        # Answered here, unconditionally - never reaches check_output below,
+        # never forwarded to the wrapped server. aran_status takes no
+        # arguments that could plausibly match a destructive-command
+        # signature, and even if some future argument shape did, this is
+        # Aran's own reserved tool name: it would never make sense to block
+        # a call to it.
+        text = build_status_report(audit_log_path, arguments=arguments, audit_only=audit_only)
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="allowed",
+            matched_signature=None,
+        )
+        answered.append((request_id, text))
+        return _DROP
 
     matched = check_output(tool_name, arguments, output_signatures)
     if matched:
@@ -633,6 +683,7 @@ def _gate_outbound_message(
     repo_scan_enabled: bool = False,
     repo_signatures: dict[str, SignatureList] | None = None,
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
+    pending_list_requests: set[RequestId] | None = None,
 ) -> bytes | None:
     """Applies the output gate to one client->server line. Returns the bytes to
     forward to the server, or None if everything in the line was blocked (in
@@ -646,6 +697,7 @@ def _gate_outbound_message(
         return line
 
     blocked: list[tuple[RequestId, str, int, dict | None]] = []
+    answered: list[tuple[RequestId, str]] = []
     gated = _gate_outbound_value(
         message,
         output_signatures=output_signatures,
@@ -657,6 +709,8 @@ def _gate_outbound_message(
         repo_scan_enabled=repo_scan_enabled,
         repo_signatures=repo_signatures,
         fetch_tarball=fetch_tarball,
+        pending_list_requests=pending_list_requests,
+        answered=answered,
     )
 
     if blocked:
@@ -674,6 +728,18 @@ def _gate_outbound_message(
                 client_out,
                 client_out_lock,
                 _encode_json_line(payloads if isinstance(message, list) else payloads[0]),
+            )
+
+    if answered:
+        # Same shape as the `blocked` write above, kept as a separate
+        # message: aran_status is answered with a *result*, not an *error*,
+        # so it can't share _blocked_payload's error-shaped construction.
+        status_payloads = [_status_payload(rid, text) for rid, text in answered if rid is not None]
+        if status_payloads:
+            _write_line(
+                client_out,
+                client_out_lock,
+                _encode_json_line(status_payloads if isinstance(message, list) else status_payloads[0]),
             )
 
     if gated is _DROP:
@@ -701,6 +767,7 @@ def _pump_client_to_server(
     repo_scan_enabled: bool = False,
     repo_signatures: dict[str, SignatureList] | None = None,
     fetch_tarball: FetchTarballFn = default_fetch_tarball,
+    pending_list_requests: set[RequestId] | None = None,
 ) -> None:
     try:
         while True:
@@ -721,6 +788,7 @@ def _pump_client_to_server(
                     repo_scan_enabled=repo_scan_enabled,
                     repo_signatures=repo_signatures,
                     fetch_tarball=fetch_tarball,
+                    pending_list_requests=pending_list_requests,
                 )
                 if profile:
                     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -816,6 +884,25 @@ def _safe_peek_id(line: bytes) -> RequestId:
     return None
 
 
+def _inject_status_tool_listing(message: dict) -> None:
+    """Splices aran_status's definition into a tools/list response's
+    result.tools, so an agent can discover and call it the normal way
+    instead of only when a developer names it exactly. Best-effort and
+    silent: a result that isn't a dict, or has no `tools` list, isn't the
+    shape this expects - left alone rather than forced into that shape,
+    the same "don't fabricate structure the server didn't send" stance
+    locate_output_match and the repo scan already take elsewhere."""
+    result = message.get("result")
+    if not isinstance(result, dict):
+        return
+    tools = result.get("tools")
+    if not isinstance(tools, list):
+        return
+    if any(isinstance(t, dict) and t.get("name") == STATUS_TOOL_NAME for t in tools):
+        return  # already present - a hostile/unusual server claiming the name, or a re-spliced id
+    tools.append(dict(STATUS_TOOL_DEFINITION))
+
+
 def _gate_response_object(
     message: dict,
     *,
@@ -825,6 +912,7 @@ def _gate_response_object(
     pending_lock: threading.Lock,
     audit_only: bool = False,
     leaf_count: list[int] | None = None,
+    pending_list_requests: set[RequestId] | None = None,
 ) -> None:
     """Gates one response-shaped JSON-RPC object in place, and audits it.
 
@@ -834,6 +922,7 @@ def _gate_response_object(
     request_id = _usable_request_id(message.get("id"))
     with pending_lock:
         tool_name = pending_tool_calls.get(request_id)
+        is_list_response = pending_list_requests is not None and request_id in pending_list_requests
 
     matches: list[str] = []
     redactions: list[str] = []
@@ -853,6 +942,12 @@ def _gate_response_object(
                 audit_only=audit_only,
                 leaf_count=leaf_count,
             )
+
+    if is_list_response:
+        # After scanning, not before: this is Aran's own trusted text, not
+        # something that arrived from the (untrusted) wrapped server, so it
+        # has no business going through the input gate at all.
+        _inject_status_tool_listing(message)
 
     if redactions:
         outcome = "would_block" if audit_only else "blocked"
@@ -908,6 +1003,7 @@ def _gate_inbound_message(
     pending_lock: threading.Lock,
     audit_only: bool = False,
     leaf_count: list[int] | None = None,
+    pending_list_requests: set[RequestId] | None = None,
 ) -> bytes:
     """Applies the input gate to one server->client line, returning the bytes
     to hand to the client (redacted if a signature matched).
@@ -944,6 +1040,7 @@ def _gate_inbound_message(
         pending_lock=pending_lock,
         audit_only=audit_only,
         leaf_count=leaf_count,
+        pending_list_requests=pending_list_requests,
     )
 
     if isinstance(message, dict):
@@ -978,6 +1075,7 @@ def _pump_server_to_client(
     degraded: threading.Event,
     audit_only: bool = False,
     profile: bool = False,
+    pending_list_requests: set[RequestId] | None = None,
 ) -> None:
     try:
         while True:
@@ -995,6 +1093,7 @@ def _pump_server_to_client(
                     pending_lock=pending_lock,
                     audit_only=audit_only,
                     leaf_count=leaf_count,
+                    pending_list_requests=pending_list_requests,
                 )
                 if profile:
                     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -1091,7 +1190,13 @@ def run_proxy(
     this file it makes real network requests, which is why it defaults off;
     `secret_signatures`/`supply_chain_signatures` are the two rule
     categories specific to that scan, and `fetch_tarball` is overridable
-    only for tests - callers outside this module should never need it."""
+    only for tests - callers outside this module should never need it.
+
+    Always on, unconditionally: the aran_status meta-tool (status.py) - a
+    developer can ask their agent for it directly and get a live summary
+    of what this session has gated, without opening the audit log
+    themselves. It's read-only, makes no network calls, and changes no
+    gating decision, so unlike the toggles above it needs no opt-in."""
     compiled_input = compile_signatures(input_signatures)
     compiled_output = compile_signatures(output_signatures)
     repo_signatures = {
@@ -1112,6 +1217,7 @@ def run_proxy(
     client_out_lock = threading.Lock()
     pending_lock = threading.Lock()
     pending_tool_calls: dict[RequestId, str] = {}
+    pending_list_requests: set[RequestId] = set()
     degraded = threading.Event()
 
     to_server = threading.Thread(
@@ -1133,6 +1239,7 @@ def run_proxy(
                 repo_scan_enabled=scan_github_repos,
                 repo_signatures=repo_signatures,
                 fetch_tarball=fetch_tarball,
+                pending_list_requests=pending_list_requests,
             ),
             degraded,
         ),
@@ -1153,6 +1260,7 @@ def run_proxy(
                 degraded=degraded,
                 audit_only=audit_only,
                 profile=profile,
+                pending_list_requests=pending_list_requests,
             ),
             degraded,
         ),

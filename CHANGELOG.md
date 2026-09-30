@@ -4,6 +4,19 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); this project
 doesn't yet follow strict semantic versioning (pre-1.0).
 
+## [Unreleased]
+
+- **`aran_status` built-in tool**: ask your agent "what's aran's status?"
+  and get a plain-text summary of recent gate activity (messages checked,
+  blocked/redacted/errored, most recent non-clean event) directly in your
+  chat - no need to open `~/.aran/audit.jsonl` yourself. Answered by Aran
+  directly (never forwarded to the wrapped server) and spliced into
+  `tools/list` responses so agents can discover it on their own. Optional
+  `hours` argument narrows/widens the window (`0` = all-time). Always on,
+  read-only, no network calls. Also fixed the README.md relative links
+  that would 404 on the PyPI project page (they now point to absolute
+  GitHub URLs).
+
 ## [0.1.0] — 2026-09-30 — Initial PyPI release
 
 - Transparent MCP stdio proxy (`aran -- <command>`): wraps any downstream

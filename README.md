@@ -182,6 +182,14 @@ anything beyond public URLs.
   `code: -32002`. This is the one feature in Aran that makes outbound
   network requests, so it's off by default — see
   [Configuration](#configuration) below.
+- **Built-in `aran_status` tool**: ask your agent *"what's aran's
+  status?"* and get a plain-text summary of recent gate activity right in
+  your chat — no log file to open. Aran answers it directly (never
+  forwarded to the wrapped server) and splices its listing into
+  `tools/list` responses so agents can discover and call it on their own.
+  Always on, read-only, no network calls. Optional `hours` argument narrows
+  or widens the window (`0` = all-time). See
+  [4. Wiring Aran into Your IDE § Confirming Aran is actually running](https://github.com/aranaisec-cyber/aran/blob/develop/docs/guide/04-ide-integration.md#confirming-aran-is-actually-running).
 
 ## Configuration
 

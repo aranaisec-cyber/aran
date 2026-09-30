@@ -22,6 +22,19 @@ def _respond(message: dict) -> dict:
             "id": request_id,
             "result": {"content": [{"type": "text", "text": text}]},
         }
+    if message.get("method") == "tools/list":
+        # A realistic, minimal tools/list result - exists so proxy tests can
+        # verify Aran splices the aran_status meta-tool (status.py) into a
+        # real tools/list response, not just a canned empty one.
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"tools": [{
+                "name": "list_files",
+                "description": "List files in a directory.",
+                "inputSchema": {"type": "object", "properties": {}},
+            }]},
+        }
     return {"jsonrpc": "2.0", "id": request_id, "result": {}}
 
 

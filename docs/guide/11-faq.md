@@ -4,6 +4,13 @@
 No. Aran launches the real server as an unmodified subprocess and relays
 messages to and from it. The server has no idea Aran is there.
 
+**How do I check Aran is actually working without digging through log
+files?**
+Ask your agent *"what's aran's status?"* — Aran answers a built-in
+`aran_status` tool directly, in your normal chat, with a plain-text
+summary of what it's gated recently. See
+[4. Wiring Aran into Your IDE § Confirming Aran is actually running](04-ide-integration.md#confirming-aran-is-actually-running).
+
 **Does Aran send any data anywhere?**
 No, by default. The only output beyond relaying your existing MCP traffic
 is a local audit log file (`~/.aran/audit.jsonl`) on your own machine.

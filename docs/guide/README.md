@@ -24,7 +24,9 @@ useful the first time, or whenever "how does this actually work?" comes up.
    get its first line.
 4. **[Wiring Aran into Your IDE](04-ide-integration.md)** — Claude Code,
    Cursor, and any other MCP-speaking tool: the one edit you make to your
-   existing server config.
+   existing server config, plus how to confirm it's actually active by
+   just asking your agent ("what's aran's status?") instead of opening a
+   log file.
 5. **[The Outbound Gate](05-outbound-gate.md)** — how Aran decides whether
    a tool call your agent is about to make is safe to send, worked through
    with real examples of an allowed call and a blocked one.

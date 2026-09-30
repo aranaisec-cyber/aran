@@ -107,8 +107,46 @@ settings UI or config file that tool uses for MCP servers.
 
 A server showing as "connected" in your IDE only confirms the process
 started — it doesn't by itself prove traffic is being gated (a server
-launched directly, without Aran, would also show as connected). The real
-confirmation is the audit log:
+launched directly, without Aran, would also show as connected).
+
+### The easy way: just ask your agent
+
+Aran answers a built-in tool call, `aran_status`, directly — it's never
+forwarded to the wrapped server, so getting a real answer back *is* the
+proof. In your IDE's chat, ask something like:
+
+> *what's aran's status?*
+
+Your agent should call `aran_status` and show you a plain-text reply
+right there in the chat, similar to:
+
+```
+Aran is ACTIVE and enforcing.
+
+Audit log: /home/you/.aran/audit.jsonl (12 entries total)
+
+In the last 24 hours: 12 messages checked
+  12 allowed
+
+This response was answered directly by Aran - it was never forwarded to the wrapped server.
+```
+
+No log file to open, no terminal needed — this is designed specifically so
+a developer doesn't have to dig through `~/.aran/audit.jsonl` themselves
+just to confirm protection is active. If your agent doesn't have
+`aran_status` in its tool list yet, it appears the moment your IDE next
+calls `tools/list` on the wrapped server (Aran splices it into that
+response) — restarting the MCP connection in your IDE forces that.
+
+Optionally narrow or widen the window: ask *"what's aran's status over
+the last hour?"* or *"...all time?"* — the agent passes that through as
+the tool's `hours` argument (`0` means all-time).
+
+### The manual way: the audit log directly
+
+If you'd rather look yourself, or want to confirm something `aran_status`'s
+summary doesn't show (the exact `matched_signature` for a specific block,
+for instance):
 
 1. Ask your agent to use the wrapped tool for anything — list a
    directory, fetch a URL, whatever the server does.
@@ -122,8 +160,8 @@ confirmation is the audit log:
    asked your agent to act, Aran is in the path and gating traffic. If the
    file doesn't exist or has no new lines, your IDE is probably still
    launching the original server directly — double-check the `command`
-   field actually says `aran` (or `python`, with `-m aran.cli` as the
-   first two `args`), not the original server binary.
+   field actually says `aran` (or `uvx`, with `aran` as the first `args`
+   entry), not the original server binary.
 
 For the fetch-server example specifically: ask your agent to fetch a page
 containing `ignore previous instructions` (or write a tiny local HTML file
