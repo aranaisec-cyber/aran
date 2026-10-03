@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); this project
 doesn't yet follow strict semantic versioning (pre-1.0).
 
+## [Unreleased]
+
+- **Human approval of blocked calls**: an outbound block (`-32001`
+  signature, `-32002` repo scan) now carries an approval code and a
+  plain-language risk explanation instead of being a dead end. A human
+  approves or declines that exact call (tool name + exact arguments)
+  through a native desktop dialog (Windows MessageBox, macOS `osascript`,
+  Linux `zenity`/`kdialog`) or `aran approve CODE [--once]` /
+  `aran decline CODE` / `aran approvals [revoke ID]`, and Aran remembers
+  the decision for the identical call. Human-only by design: no
+  agent-callable approve tool, `aran approve` requires an interactive
+  terminal, dialogs default to the safe button, and the agent-visible
+  message never echoes the call's arguments. Decisions are logged
+  (`direction: "approval"`) and summarized by `aran_status`. On by default;
+  `ARAN_APPROVALS=0` restores plain blocks, `ARAN_APPROVAL_DIALOG=0`
+  disables the desktop prompt. See `docs/guide/12-approvals.md`.
+
 ## [0.1.2] — 2026-09-30
 
 - **Repositioned**: Aran is now introduced everywhere as "the lightweight,

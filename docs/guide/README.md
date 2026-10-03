@@ -54,6 +54,10 @@ useful the first time, or whenever "how does this actually work?" comes up.
     straight to yours.
 11. **[FAQ](11-faq.md)** — short answers to the questions that don't need
     a whole chapter.
+12. **[Human Approval](12-approvals.md)** — what happens when the outbound
+    gate blocks a call: Aran parks it under an approval code, explains the
+    risk, and lets *you* (never the agent) approve or decline it from a
+    desktop dialog or `aran approve CODE`, then remembers your decision.
 
 ## What this guide is not
 

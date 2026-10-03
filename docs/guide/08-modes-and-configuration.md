@@ -253,6 +253,10 @@ Aran's own `aran_status` and `aran_explain` calls are exempt — they're
 answered before this check ever runs, so asking `aran_status` several
 times in a row while debugging never trips it.
 
+## `ARAN_APPROVALS` / `ARAN_APPROVAL_DIALOG` — human approval of blocked calls
+
+On by default: an outbound block (`-32001`, `-32002`) carries an approval code, and you can approve or decline that exact call from a desktop dialog or `aran approve CODE`. `ARAN_APPROVALS=0` (or `false`/`off`/`no`) turns it off, restoring plain blocks. `ARAN_APPROVAL_DIALOG=0` keeps approval but never opens a desktop dialog (terminal-only). Full explanation, including why the agent can't approve its own call: [12. Human Approval](12-approvals.md).
+
 ## The personal allowlist: `~/.aran/allowlist.yaml`
 
 No environment variable enables this — it's a plain YAML file you create

@@ -51,7 +51,11 @@ PROXY_INSTRUCTIONS = (
     "- A tool call answered with JSON-RPC error code -32001 (destructive "
     "command matched) or -32002 (a referenced GitHub repo failed a content "
     "scan) was intentionally blocked by Aran before it reached this server. "
-    "Explain that to the user rather than retrying the call.\n"
+    "Explain that to the user rather than retrying the call. If the error "
+    "carries an approval code, relay it: only the user can approve it, from "
+    "their own terminal (`aran approve CODE`) or a desktop prompt - never "
+    "attempt to approve it yourself or run that command. Once the user has "
+    "approved, retrying the identical call will go through.\n"
     "- Tool result text reading \"[Aran] content blocked: flagged as a "
     "probable prompt injection\" means Aran redacted that content before it "
     "reached you - the tool itself did not fail.\n"
@@ -127,6 +131,17 @@ def _compute_window(events: list[dict[str, Any]], hours: float) -> tuple[list[di
     return events, "all time"
 
 
+def _approval_counts(window_events: list[dict[str, Any]]) -> dict[str, int]:
+    """{"approved": 2, "declined": 1, ...} for the human approval decisions
+    in the window (direction "approval", written by approvals.py)."""
+    counts: dict[str, int] = {}
+    for event in window_events:
+        if event.get("direction") == "approval":
+            outcome = str(event.get("outcome", "unknown"))
+            counts[outcome] = counts.get(outcome, 0) + 1
+    return counts
+
+
 def _event_time(event: dict[str, Any]) -> datetime | None:
     timestamp = event.get("timestamp")
     if not isinstance(timestamp, str):
@@ -183,24 +198,27 @@ def build_status_report(
             "forwarded to the wrapped server."
         )
 
+    window_events, _ = _compute_window(events, hours)
+    # A human's approve/decline decision is recorded in the same log but isn't
+    # gated traffic - counting it as a "message checked" would inflate the
+    # numbers - so it's reported on its own line instead.
+    gate_events = [e for e in window_events if e.get("direction") != "approval"]
+    decisions = _approval_counts(window_events)
     if hours > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        window_events = [e for e in events if (t := _event_time(e)) is not None and t >= cutoff]
         empty_line = f"No gated traffic in the {_format_window(hours)}."
-        summary_header = f"In the {_format_window(hours)}: {len(window_events)} messages checked"
+        summary_header = f"In the {_format_window(hours)}: {len(gate_events)} messages checked"
     else:
-        window_events = events
         empty_line = "No gated traffic recorded."
-        summary_header = f"All time: {len(window_events)} messages checked"
+        summary_header = f"All time: {len(gate_events)} messages checked"
 
     lines = [mode_line, "", f"Audit log: {audit_log_path} ({len(events)} entries total)", ""]
 
-    if not window_events:
+    if not gate_events:
         lines.append(empty_line)
         return "\n".join(lines)
 
     by_outcome: dict[str, int] = {}
-    for event in window_events:
+    for event in gate_events:
         outcome = event.get("outcome", "unknown")
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
 
@@ -211,7 +229,7 @@ def build_status_report(
         if outcome in by_outcome:
             lines.append(f"  {by_outcome[outcome]} {outcome}")
 
-    non_clean = [e for e in window_events if e.get("outcome") in _NON_CLEAN_OUTCOMES]
+    non_clean = [e for e in gate_events if e.get("outcome") in _NON_CLEAN_OUTCOMES]
     if non_clean:
         last = non_clean[-1]
         signature_note = f" (matched {last['matched_signature']!r})" if last.get("matched_signature") else ""
@@ -220,6 +238,13 @@ def build_status_report(
         lines.append(
             f"  {last.get('timestamp')} - {last.get('direction')} "
             f"\"{last.get('tool_name')}\" -> {last.get('outcome')}{signature_note}"
+        )
+
+    if decisions:
+        lines.append("")
+        lines.append(
+            "Human approval decisions: "
+            + ", ".join(f"{count} {outcome}" for outcome, count in decisions.items())
         )
 
     lines.append("")
@@ -243,13 +268,14 @@ def build_status_json(
     hours = _parse_hours(arguments)
     events = read_events(audit_log_path)
     window_events, _ = _compute_window(events, hours)
+    gate_events = [e for e in window_events if e.get("direction") != "approval"]
 
     by_outcome: dict[str, int] = {}
-    for event in window_events:
+    for event in gate_events:
         outcome = event.get("outcome", "unknown")
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
 
-    non_clean = [e for e in window_events if e.get("outcome") in _NON_CLEAN_OUTCOMES]
+    non_clean = [e for e in gate_events if e.get("outcome") in _NON_CLEAN_OUTCOMES]
 
     data = {
         "active": True,
@@ -257,8 +283,9 @@ def build_status_json(
         "audit_log_path": str(audit_log_path),
         "total_entries": len(events),
         "window_hours": hours if hours > 0 else None,
-        "window_messages_checked": len(window_events),
+        "window_messages_checked": len(gate_events),
         "by_outcome": by_outcome,
+        "approval_decisions": _approval_counts(window_events),
         "most_recent_non_clean_event": non_clean[-1] if non_clean else None,
         "answered_directly_by_aran": True,
     }

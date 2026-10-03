@@ -124,6 +124,10 @@ is Aran working as intended.
 - It doesn't touch anything about the tool *result* — that's a separate
   check, covered next.
 
+## Blocked, but you actually want it?
+
+A block doesn't have to be the end. Aran can park the blocked call under an approval code and let **you** approve or decline that exact call from a desktop dialog or `aran approve CODE` - the agent can't approve for itself. See [12. Human Approval](12-approvals.md).
+
 ## Next
 
 [6. The Inbound Gate](06-inbound-gate.md) — the other half of the

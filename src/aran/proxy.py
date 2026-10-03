@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
 from aran.allowlist import is_trusted_repo
+from aran.approvals import ApprovalContext, KIND_REPO_SCAN, KIND_SIGNATURE, call_key, describe_risk
 from aran.audit import log_event
 from aran.gates import (
     GitHubRepoRef,
@@ -415,6 +416,71 @@ class _Dropped:
 _DROP = _Dropped()
 
 
+def _consume_approval(approvals: ApprovalContext | None, tool_name: str, arguments: Any) -> bool:
+    """Whether a human has approved this exact call (tool name + arguments).
+    A store that can't be read means "not approved" - the block stands."""
+    if approvals is None:
+        return False
+    try:
+        return approvals.store.consume_approval(call_key(tool_name, arguments))
+    except OSError:
+        return False
+
+
+def _offer_approval(
+    approvals: ApprovalContext | None,
+    *,
+    tool_name: str,
+    arguments: Any,
+    kind: str,
+    matched_signature: str | None,
+    target_node: str | None,
+    risk_detail: dict | None,
+    message: str,
+    data: dict,
+) -> tuple[str, dict, str | None]:
+    """Turns a plain block into "blocked, awaiting a human": parks the call as
+    a pending approval, tells a human (desktop dialog) the first time, and
+    adds the code to the error the agent sees. Returns (message, data, code).
+
+    Nothing attacker-controlled is echoed into the message - only Aran's own
+    signature text and a code - since the agent reads it. Any failure to
+    reach the store leaves the original block untouched (fail closed)."""
+    if approvals is None:
+        return message, data, None
+    key = call_key(tool_name, arguments)
+    try:
+        if approvals.store.status(key) == "declined":
+            return (
+                message + ". The user previously declined this exact call, so Aran will not ask again.",
+                {**data, "approval": {"status": "declined"}},
+                None,
+            )
+        pending, created = approvals.store.get_or_create_pending(
+            key,
+            tool_name=tool_name,
+            arguments=arguments,
+            kind=kind,
+            matched_signature=matched_signature,
+            target_node=target_node,
+            risk=describe_risk(kind, matched_signature, risk_detail),
+        )
+    except OSError as e:
+        _warn(f"[Aran] warning: could not record an approval request ({e}); the call stays blocked")
+        return message, data, None
+    if created and approvals.notify is not None:
+        approvals.notify(pending)
+    remaining = max(0, int(pending.expires_at - approvals.store.clock()))
+    prompt_note = ", or through the desktop prompt" if approvals.notify is not None else ""
+    return (
+        f"{message} - awaiting human approval (code {pending.code}). Tell the user: they can review "
+        f"and approve this exact call with `aran approve {pending.code}` in their own terminal"
+        f"{prompt_note}. Do not try to approve it yourself.",
+        {**data, "approval": {"status": "pending", "code": pending.code, "expires_in_seconds": remaining}},
+        pending.code,
+    )
+
+
 def _gate_github_repo_reference(
     *,
     tool_name: str,
@@ -426,6 +492,8 @@ def _gate_github_repo_reference(
     blocked: list[tuple[RequestId, str, int, dict | None]],
     audit_only: bool,
     trusted_repos: set[str] | None = None,
+    approvals: ApprovalContext | None = None,
+    is_call_approved: Callable[[], bool] | None = None,
 ) -> bool:
     """The optional GitHub repo scan (ARAN_SCAN_GITHUB_REPOS=1): if this call
     references a public GitHub repo, fetch and scan it before the call that
@@ -514,27 +582,48 @@ def _gate_github_repo_reference(
         )
         return False
 
+    if is_call_approved is not None and is_call_approved():
+        log_event(
+            audit_log_path,
+            direction="outbound",
+            tool_name=tool_name,
+            outcome="allowed",
+            matched_signature=first.matched_signature,
+            detail={**detail, "approved_by_user": True},
+        )
+        return False
+
+    message_text = (
+        f"[Aran] blocked: outbound call references GitHub repo {repo_label}, "
+        f"which failed a content scan ({first.category}: {first.matched_signature!r} in {first.path!r})"
+    )
+    data = {
+        "violation": "GitHub repo content scan matched",
+        "repo": repo_label,
+        "file": first.path,
+        "category": first.category,
+        "matched_signature": first.matched_signature,
+    }
+    message_text, data, code = _offer_approval(
+        approvals,
+        tool_name=tool_name,
+        arguments=arguments,
+        kind=KIND_REPO_SCAN,
+        matched_signature=first.matched_signature,
+        target_node=first.path,
+        risk_detail=detail,
+        message=message_text,
+        data=data,
+    )
     log_event(
         audit_log_path,
         direction="outbound",
         tool_name=tool_name,
         outcome="blocked",
         matched_signature=first.matched_signature,
-        detail=detail,
+        detail={**detail, "approval_code": code} if code else detail,
     )
-    blocked.append((
-        request_id,
-        f"[Aran] blocked: outbound call references GitHub repo {repo_label}, "
-        f"which failed a content scan ({first.category}: {first.matched_signature!r} in {first.path!r})",
-        CODE_REPO_SCAN_BLOCKED,
-        {
-            "violation": "GitHub repo content scan matched",
-            "repo": repo_label,
-            "file": first.path,
-            "category": first.category,
-            "matched_signature": first.matched_signature,
-        },
-    ))
+    blocked.append((request_id, message_text, CODE_REPO_SCAN_BLOCKED, data))
     return True
 
 
@@ -555,6 +644,7 @@ def _gate_outbound_object(
     pending_initialize_requests: set[RequestId] | None = None,
     trusted_repos: set[str] | None = None,
     loop_guard: LoopGuard | None = None,
+    approvals: ApprovalContext | None = None,
 ) -> Any:
     """Gates one client->server JSON-RPC object. Returns the object to forward,
     or _DROP when the call is blocked - in which case (id, message, code, data)
@@ -633,37 +723,67 @@ def _gate_outbound_object(
         answered.append((request_id, text))
         return _DROP
 
+    # Memoized so a one-time approval is claimed at most once per call, even
+    # if both this check and the repo scan below would have blocked it.
+    approval_result: list[bool] = []
+
+    def call_approved() -> bool:
+        if not approval_result:
+            approval_result.append(_consume_approval(approvals, tool_name, arguments))
+        return approval_result[0]
+
     matched = check_output(tool_name, arguments, output_signatures)
     if matched:
-        if not audit_only:
+        if not audit_only and call_approved():
+            # A human approved this exact call: forward it, say so in the audit
+            # trail, and let the remaining checks (repo scan, loop guard) run.
+            log_event(
+                audit_log_path,
+                direction="outbound",
+                tool_name=tool_name,
+                outcome="allowed",
+                matched_signature=matched,
+                detail={"approved_by_user": True},
+            )
+        elif not audit_only:
+            target_node = locate_output_match(tool_name, arguments, matched)
+            message_text = f"[Aran] blocked: outbound call matched signature {matched!r}"
+            data = {
+                "violation": "destructive command signature matched",
+                "matched_signature": matched,
+                "target_node": target_node,
+            }
+            message_text, data, code = _offer_approval(
+                approvals,
+                tool_name=tool_name,
+                arguments=arguments,
+                kind=KIND_SIGNATURE,
+                matched_signature=matched,
+                target_node=target_node,
+                risk_detail=None,
+                message=message_text,
+                data=data,
+            )
             log_event(
                 audit_log_path,
                 direction="outbound",
                 tool_name=tool_name,
                 outcome="blocked",
                 matched_signature=matched,
+                detail={"approval_code": code} if code else None,
             )
-            target_node = locate_output_match(tool_name, arguments, matched)
-            blocked.append((
-                request_id,
-                f"[Aran] blocked: outbound call matched signature {matched!r}",
-                CODE_SIGNATURE_BLOCKED,
-                {
-                    "violation": "destructive command signature matched",
-                    "matched_signature": matched,
-                    "target_node": target_node,
-                },
-            ))
+            blocked.append((request_id, message_text, CODE_SIGNATURE_BLOCKED, data))
             return _DROP
-        # audit_only: log as "would_block" and fall through to the normal
-        # allow path below - the call is still forwarded, unmodified.
-        log_event(
-            audit_log_path,
-            direction="outbound",
-            tool_name=tool_name,
-            outcome="would_block",
-            matched_signature=matched,
-        )
+        else:
+            # audit_only: log as "would_block" and fall through to the normal
+            # allow path below - the call is still forwarded, unmodified.
+            log_event(
+                audit_log_path,
+                direction="outbound",
+                tool_name=tool_name,
+                outcome="would_block",
+                matched_signature=matched,
+            )
     else:
         log_event(
             audit_log_path,
@@ -684,6 +804,8 @@ def _gate_outbound_object(
             blocked=blocked,
             audit_only=audit_only,
             trusted_repos=trusted_repos,
+            approvals=approvals,
+            is_call_approved=call_approved,
         )
         if dropped:
             return _DROP
@@ -780,6 +902,7 @@ def _gate_outbound_message(
     pending_initialize_requests: set[RequestId] | None = None,
     trusted_repos: set[str] | None = None,
     loop_guard: LoopGuard | None = None,
+    approvals: ApprovalContext | None = None,
 ) -> bytes | None:
     """Applies the output gate to one client->server line. Returns the bytes to
     forward to the server, or None if everything in the line was blocked (in
@@ -810,6 +933,7 @@ def _gate_outbound_message(
         pending_initialize_requests=pending_initialize_requests,
         trusted_repos=trusted_repos,
         loop_guard=loop_guard,
+        approvals=approvals,
     )
 
     if blocked:
@@ -870,6 +994,7 @@ def _pump_client_to_server(
     pending_initialize_requests: set[RequestId] | None = None,
     trusted_repos: set[str] | None = None,
     loop_guard: LoopGuard | None = None,
+    approvals: ApprovalContext | None = None,
 ) -> None:
     try:
         while True:
@@ -894,6 +1019,7 @@ def _pump_client_to_server(
                     pending_initialize_requests=pending_initialize_requests,
                     trusted_repos=trusted_repos,
                     loop_guard=loop_guard,
+                    approvals=approvals,
                 )
                 if profile:
                     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -1304,6 +1430,7 @@ def run_proxy(
     loop_guard_enabled: bool = False,
     loop_guard_threshold: int = DEFAULT_THRESHOLD,
     loop_guard_window_seconds: float = DEFAULT_WINDOW_SECONDS,
+    approvals: ApprovalContext | None = None,
 ) -> int:
     """Spawns `command` as the real MCP server and relays JSON-RPC between
     client_in/client_out (the IDE side) and the child's stdio, applying the
@@ -1352,7 +1479,13 @@ def run_proxy(
     content-based check in this file, a fast legitimate repeat (polling,
     an intentional retry) looks identical to a genuine loop by design, so
     this is opt-in the same way the GitHub repo scan is, for a different
-    reason (see loop_guard.py)."""
+    reason (see loop_guard.py).
+
+    approvals (see approvals.py) turns a signature/repo-scan block into
+    "blocked, awaiting a human": the call is still blocked, but parked under
+    a code a person can approve (terminal command or desktop dialog - never
+    the agent), after which a retry of that exact call passes. None means
+    plain blocking, exactly as before."""
     compiled_input = compile_signatures(input_signatures)
     compiled_output = compile_signatures(output_signatures)
     repo_signatures = {
@@ -1405,6 +1538,7 @@ def run_proxy(
                 pending_initialize_requests=pending_initialize_requests,
                 trusted_repos=trusted_repos,
                 loop_guard=loop_guard,
+                approvals=approvals,
             ),
             degraded,
         ),

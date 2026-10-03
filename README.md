@@ -202,6 +202,15 @@ anything beyond public URLs.
   useful context for an agent or developer debugging why a call was
   blocked. A bare `-32000` with no `data` means Aran itself couldn't
   safely inspect the message (fail-closed), not a signature match.
+- **Human approval of blocked calls** (on by default). Instead of a dead
+  end, an outbound block (`-32001`/`-32002`) carries an approval code, with
+  a plain-language explanation of the risk. You approve or decline that
+  exact call from a native desktop dialog (Windows, macOS, Linux with
+  zenity/kdialog) or with `aran approve CODE` in your own terminal, and
+  Aran remembers your decision for the identical call. The agent can't
+  approve for itself: there is no approve tool, `aran approve` refuses a
+  non-interactive shell, and the dialog defaults to the safe button. See
+  [Human approval](https://github.com/aranaisec-cyber/aran/blob/develop/docs/guide/12-approvals.md).
 - **Optional: scan a public GitHub repo before it's cloned/downloaded**
   (`ARAN_SCAN_GITHUB_REPOS=1`). If an outbound call references a
   `github.com` repo (an HTTPS clone URL or an SSH remote, in any tool's
@@ -273,6 +282,12 @@ Environment variables, read once at startup:
   described above. `ARAN_LOOP_GUARD_THRESHOLD` (default `20`) sets the
   repeat count that trips it; `ARAN_LOOP_GUARD_WINDOW_SECONDS` (default
   `60`) sets the tracking window. Blocked calls carry `code: -32003`.
+
+- **`ARAN_APPROVALS=0`** (or `false`/`off`/`no`) — turn off human approval
+  of blocked calls (blocks become plain blocks). `ARAN_APPROVAL_DIALOG=0`
+  keeps approval but never opens a desktop dialog (terminal-only). Manage
+  requests with `aran approvals`, `aran approve CODE [--once]`,
+  `aran decline CODE`.
 
 ```bash
 ARAN_MODE=audit aran -- npx -y @modelcontextprotocol/server-filesystem /path

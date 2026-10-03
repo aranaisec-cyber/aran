@@ -280,3 +280,35 @@ def test_build_explain_report_is_a_dry_run_and_says_so():
     report = build_explain_report({"text": "rm -rf /"}, EXPLAIN_SIGNATURES)
     assert "dry run" in report
     assert "nothing was logged" in report
+
+
+# --- human approval decisions (direction "approval") ------------------------------
+
+def test_approval_decisions_are_not_counted_as_checked_messages(tmp_path: Path):
+    log = tmp_path / "audit.jsonl"
+    _write_events(log, [
+        _event("blocked", matched_signature="rm"),
+        _event("approved", direction="approval"),
+        _event("declined", direction="approval"),
+    ])
+
+    data = json.loads(build_status_json(log))
+
+    assert data["window_messages_checked"] == 1  # the two decisions are not gate traffic
+    assert data["approval_decisions"] == {"approved": 1, "declined": 1}
+
+
+def test_text_report_has_a_human_approval_line_only_when_there_were_decisions(tmp_path: Path):
+    log = tmp_path / "audit.jsonl"
+    _write_events(log, [_event("blocked"), _event("approved", direction="approval")])
+    quiet = tmp_path / "quiet.jsonl"
+    _write_events(quiet, [_event("blocked")])
+
+    assert "Human approval decisions: 1 approved" in build_status_report(log)
+    assert "Human approval" not in build_status_report(quiet)
+
+
+def test_json_status_has_empty_approval_decisions_by_default(tmp_path: Path):
+    data = json.loads(build_status_json(tmp_path / "missing.jsonl"))
+
+    assert data["approval_decisions"] == {}

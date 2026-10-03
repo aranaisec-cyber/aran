@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 from typing import BinaryIO
 
+from aran import approvals_cli
 from aran.allowlist import filter_signatures, load_allowlist
+from aran.approval_dialog import default_dialog, make_notifier
+from aran.approvals import ApprovalContext, ApprovalStore
 from aran.loop_guard import DEFAULT_THRESHOLD, DEFAULT_WINDOW_SECONDS
 from aran.proxy import run_proxy
 from aran.rules import INPUT_KEY, OUTPUT_KEY, load_rules_detailed
@@ -28,6 +31,7 @@ def default_rules_path() -> Path:
 DEFAULT_RULES_PATH = default_rules_path()
 DEFAULT_AUDIT_LOG_PATH = Path.home() / ".aran" / "audit.jsonl"
 DEFAULT_ALLOWLIST_PATH = Path.home() / ".aran" / "allowlist.yaml"
+DEFAULT_APPROVALS_DIR = Path.home() / ".aran" / "approvals"
 
 USAGE = "usage: aran -- <command to launch the real MCP server> [args...]"
 
@@ -88,6 +92,15 @@ def scan_github_repos_enabled(env: dict[str, str]) -> bool:
     return value not in ("", "0", "false")
 
 
+def approvals_enabled(env: dict[str, str]) -> bool:
+    """Human approval of blocked calls is ON unless ARAN_APPROVALS is 0/false/
+    off/no. Unlike the opt-in toggles, enabling it changes nothing about what
+    gets blocked - a call is blocked exactly as before - it only adds an
+    approval code to the error and makes `aran approve` / the desktop prompt
+    available, so there is no behavior to surprise anyone with."""
+    return env.get("ARAN_APPROVALS", "").strip().lower() not in ("0", "false", "off", "no")
+
+
 def loop_guard_enabled(env: dict[str, str]) -> bool:
     """ARAN_LOOP_GUARD=1 (or any other non-empty, non-"0"/"false" value)
     enables the loop guard: an identical tool call (same name, same
@@ -143,6 +156,11 @@ def main(
 ) -> int:
     argv = sys.argv[1:] if argv is None else argv
     env = dict(os.environ) if env is None else env
+    if argv and argv[0] in approvals_cli.APPROVAL_COMMANDS:
+        return approvals_cli.run(
+            argv,
+            store=ApprovalStore(DEFAULT_APPROVALS_DIR, audit_log_path=DEFAULT_AUDIT_LOG_PATH),
+        )
     try:
         command = parse_args(argv)
     except ValueError as e:
@@ -218,6 +236,20 @@ def main(
             file=sys.stderr,
         )
 
+    approvals = None
+    if approvals_enabled(env) and not audit_only:
+        store = ApprovalStore(DEFAULT_APPROVALS_DIR, audit_log_path=DEFAULT_AUDIT_LOG_PATH)
+        dialog = default_dialog(env)
+        approvals = ApprovalContext(
+            store,
+            make_notifier(store, dialog, on_error=lambda m: print(m, file=sys.stderr)) if dialog else None,
+        )
+        print(
+            "[Aran] human approval enabled: a blocked call can be reviewed with `aran approvals`"
+            + (" or a desktop prompt" if dialog else " (no desktop prompt available here)"),
+            file=sys.stderr,
+        )
+
     try:
         return run_proxy(
             resolve_command(command),
@@ -235,6 +267,7 @@ def main(
             loop_guard_enabled=loop_guard,
             loop_guard_threshold=threshold,
             loop_guard_window_seconds=window_seconds,
+            approvals=approvals,
         )
     except OSError as e:
         # Popen failures (command not found, not executable, ...) must surface

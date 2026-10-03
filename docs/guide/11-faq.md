@@ -1,5 +1,8 @@
 # 11. FAQ
 
+**Can I approve a blocked call instead of just losing it?**
+Yes - when the outbound gate blocks a call, Aran gives it an approval code and pops up a desktop dialog (or you run `aran approve CODE` in your own terminal). Your decision is saved against the exact call, so the agent's retry goes through - or stays blocked if you declined. The agent has no way to approve for itself. See [12. Human Approval](12-approvals.md).
+
 **Does Aran modify the MCP server I'm wrapping?**
 No. Aran launches the real server as an unmodified subprocess and relays
 messages to and from it. The server has no idea Aran is there.
