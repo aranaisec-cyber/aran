@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aran"
-version = "0.1.2"
+version = "0.1.3"
 description = "Aran — the lightweight, open-source developer framework for local IDE telemetry and local input/output guardrails: blocks destructive tool calls and redacts prompt-injection payloads before they reach your agent or your machine."
 readme = "README.md"
 license = "MIT"

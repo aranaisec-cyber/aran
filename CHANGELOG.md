@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); this project
 doesn't yet follow strict semantic versioning (pre-1.0).
 
-## [Unreleased]
+## [0.1.3] — 2026-10-05
 
 - **Human approval of blocked calls**: an outbound block (`-32001`
   signature, `-32002` repo scan) now carries an approval code and a

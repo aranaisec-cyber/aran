@@ -34,7 +34,7 @@ from aran.audit import log_event
 PENDING_TTL_SECONDS = 900
 _PREVIEW_MAX_CHARS = 1500
 # No 0/O/1/I - a code is read off a dialog or a chat message and typed back.
-_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 _CODE_LENGTH = 6
 CODE_PREFIX = "AR-"
 
